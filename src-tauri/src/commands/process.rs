@@ -8,6 +8,10 @@ mod desktop_reopen;
 pub use desktop_reopen::*;
 
 #[cfg(any(windows, test))]
+#[path = "windows_daemon.rs"]
+mod windows_daemon;
+
+#[cfg(any(windows, test))]
 use anyhow::Context;
 
 #[cfg(unix)]
@@ -135,6 +139,17 @@ fn close_codex_processes_blocking(
     let mut killed_pids = Vec::new();
     let mut failed_pids = Vec::new();
 
+    // A managed server is not a stale Electron helper. Keep it out of the
+    // generic taskkill path: its updater may otherwise bring it straight back.
+    #[cfg(windows)]
+    let managed_daemons = read_windows_codex_processes()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|process| {
+            pids.contains(&process.process_id) && windows_daemon::is_managed_daemon(process)
+        })
+        .collect::<Vec<_>>();
+
     #[cfg(target_os = "macos")]
     let mut admin_targets: Vec<u32> = Vec::new();
 
@@ -166,6 +181,11 @@ fn close_codex_processes_blocking(
     }
 
     for pid in targets.iter().copied() {
+        #[cfg(windows)]
+        if managed_daemons.iter().any(|daemon| daemon.process_id == pid) {
+            continue;
+        }
+
         #[cfg(target_os = "macos")]
         if !force_close && desktop_processes.contains(&pid) {
             continue;
@@ -187,6 +207,16 @@ fn close_codex_processes_blocking(
         } else {
             failed_pids.push(pid);
         }
+    }
+
+    // This function is the existing user-confirmed close operation, not a
+    // usage refresh or a silent account-switch side effect. Never swallow a
+    // lifecycle failure and continue as though the daemon had stopped.
+    #[cfg(windows)]
+    for daemon in &managed_daemons {
+        windows_daemon::stop_for_confirmed_close(daemon)
+            .map_err(|error| format!("{error:#}"))?;
+        killed_pids.push(daemon.process_id);
     }
 
     #[cfg(target_os = "macos")]
@@ -685,10 +715,17 @@ fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u
     let mut active_pids = Vec::new();
     let mut ignored_count = 0;
 
-    for process in processes
-        .iter()
-        .filter(|process| is_windows_codex_root_process(process))
-    {
+    for process in processes {
+        // The daemon can have neither a window nor an Electron renderer.
+        // Detect it before both the resources\codex.exe and IDE exclusions.
+        if windows_daemon::is_managed_daemon(process) {
+            active_pids.push(process.process_id);
+            continue;
+        }
+        if !is_windows_codex_root_process(process) {
+            continue;
+        }
+
         let command = process.command_line.to_ascii_lowercase();
         if is_ide_plugin_process(&command) {
             ignored_count += 1;
