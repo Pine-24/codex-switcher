@@ -67,6 +67,24 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Build unsigned Windows x64 installer
         run: pnpm tauri:win build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
+      - name: Export exact prepared source for the release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          mkdir -p release-output
+          git bundle create release-output/release-source.bundle HEAD "^$GITHUB_SHA"
+          cp docs/releases/v0.2.21-pine.1.md release-output/RELEASE-NOTES.md
+      - name: Preserve the unverified build candidate for troubleshooting
+        uses: actions/upload-artifact@v4
+        with:
+          name: pine-windows-build-candidate
+          path: |
+            release-output/
+            src-tauri/target/x86_64-pc-windows-msvc/release/codex-switcher.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_x64-setup.exe
+          if-no-files-found: error
+          retention-days: 2
       - name: Install and start the packaged application on the Windows runner
         shell: pwsh
         env:
@@ -85,14 +103,22 @@ jobs:
           if ($installer.ExitCode -ne 0) { throw "Silent installation failed: $($installer.ExitCode)" }
           $installedBinary = Join-Path $installDir 'codex-switcher.exe'
           if (-not (Test-Path $installedBinary)) { throw 'Installed binary not found' }
-          if ((Get-FileHash $binary).Hash -ne (Get-FileHash $installedBinary).Hash) { throw 'Installed binary differs from build output' }
+          $verificationReport = Join-Path $env:RUNNER_TEMP 'pine-nsis-binary-verification.json'
+          node scripts/verify-nsis-binary.mjs $binary $installedBinary $verificationReport
+          if ($LASTEXITCODE -ne 0) { throw 'Installed binary verification failed' }
+          $binaryVerification = Get-Content -Raw $verificationReport | ConvertFrom-Json
           $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP 'pine-smoke-codex-home'
           New-Item -ItemType Directory -Force $env:CODEX_HOME | Out-Null
-          $app = Start-Process -FilePath $installedBinary -PassThru
+          $stdoutLog = Join-Path $env:RUNNER_TEMP 'pine-startup-stdout.log'
+          $stderrLog = Join-Path $env:RUNNER_TEMP 'pine-startup-stderr.log'
+          $app = Start-Process -FilePath $installedBinary -WorkingDirectory $installDir -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
           try {
             Start-Sleep -Seconds 10
             $app.Refresh()
-            if ($app.HasExited) { throw "Packaged application exited during startup: $($app.ExitCode)" }
+            if ($app.HasExited) {
+              Get-Content $stdoutLog, $stderrLog -ErrorAction SilentlyContinue
+              throw "Packaged application exited during startup: $($app.ExitCode)"
+            }
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
           }
@@ -109,21 +135,15 @@ jobs:
             runner_os = [Environment]::OSVersion.VersionString
             target = 'x86_64-pc-windows-msvc'
             rustc = (rustc --version)
+            binary_verification = $binaryVerification
             unsigned = $true
             updates = 'manual; upstream feed disabled'
-            verification = @('frontend tests', 'production frontend build', 'native Windows cargo test', 'release NSIS build', 'PE x64 header', 'silent install exit 0', 'installed binary hash matches', 'packaged app survived 10 seconds')
+            verification = @('frontend tests', 'production frontend build', 'native Windows cargo test', 'release NSIS build', 'PE x64 header', 'silent install exit 0', 'installed binary matches exact Tauri NSIS marker patch', 'packaged app survived 10 seconds')
             not_verified = @('Windows 11 user device', 'live OAuth account switch', 'managed daemon shutdown with real Codex work')
           }
           $info | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM 'release-output/assets/BUILD-INFO.json'
           $checksums = Get-ChildItem 'release-output/assets' -File | Sort-Object Name | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
           $checksums | Set-Content -Encoding utf8NoBOM 'release-output/assets/SHA256SUMS.txt'
-      - name: Export exact prepared source for the release tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --exit-code
-          git bundle create release-output/release-source.bundle HEAD "^$GITHUB_SHA"
-          cp docs/releases/v0.2.21-pine.1.md release-output/RELEASE-NOTES.md
       - uses: actions/upload-artifact@v4
         with:
           name: pine-windows-release
