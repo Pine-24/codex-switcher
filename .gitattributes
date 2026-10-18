@@ -1,0 +1,3 @@
+# Keep lockfiles and text fixtures identical on Windows and Unix checkouts.
+# Binary files are detected automatically and are not rewritten.
+* text=auto eol=lf
