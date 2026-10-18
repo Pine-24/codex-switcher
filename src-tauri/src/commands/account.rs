@@ -166,6 +166,10 @@ pub async fn switch_account_by_id(account_id: &str) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
 
+    // Token refresh awaited network I/O. A desktop or managed daemon may have
+    // restarted meanwhile; recheck before replacing its cached credentials.
+    ensure_codex_not_running()?;
+
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;
 
