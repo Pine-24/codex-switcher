@@ -79,9 +79,7 @@ fn windows_arguments(command: &str) -> Option<Vec<String>> {
                 argument.extend(std::iter::repeat_n('\\', backslashes));
                 // Backslashes only escape quotes. An unquoted separator
                 // following a path's trailing backslash still ends the arg.
-                if input.peek().is_none()
-                    || (!quoted && matches!(input.peek(), Some(' ' | '\t')))
-                {
+                if input.peek().is_none() || (!quoted && matches!(input.peek(), Some(' ' | '\t'))) {
                     break;
                 }
                 argument.push(input.next()?);
@@ -146,7 +144,9 @@ pub(super) fn stop_for_confirmed_close(process: &WindowsCodexProcess) -> anyhow:
     let current = super::read_windows_codex_processes()?;
     if !current.iter().any(|candidate| {
         candidate.process_id == process.process_id
-            && candidate.executable_path.eq_ignore_ascii_case(&process.executable_path)
+            && candidate
+                .executable_path
+                .eq_ignore_ascii_case(&process.executable_path)
             && candidate.command_line == process.command_line
             && is_managed_daemon(candidate)
     }) {
@@ -200,21 +200,25 @@ mod tests {
             process_id: 421,
             parent_process_id: 1,
             command_line: command.into(),
-            executable_path: r"C:\Users\Test\.codex\packages\app-server-daemon\current\bin\codex.exe".into(),
+            executable_path:
+                r"C:\Users\Test\.codex\packages\app-server-daemon\current\bin\codex.exe".into(),
             main_window_title: String::new(),
         }
     }
 
     #[test]
     fn headless_managed_daemon_blocks_switching() {
-        let daemon = process(r#""C:\Users\Test User\.codex\packages\app-server-daemon\current\bin\codex.exe" app-server --listen unix:// --managed-daemon"#);
+        let daemon = process(
+            r#""C:\Users\Test User\.codex\packages\app-server-daemon\current\bin\codex.exe" app-server --listen unix:// --managed-daemon"#,
+        );
         assert!(is_managed_daemon(&daemon));
         assert_eq!(classify_windows_codex_processes(&[daemon]), (vec![421], 0));
     }
 
     #[test]
     fn bundled_managed_daemon_is_not_lost_to_resources_filter() {
-        let mut daemon = process(r#""C:\Program Files\Codex\resources\codex.exe" app-server --managed-daemon"#);
+        let mut daemon =
+            process(r#""C:\Program Files\Codex\resources\codex.exe" app-server --managed-daemon"#);
         daemon.executable_path = r"C:\Program Files\Codex\resources\codex.exe".into();
         assert_eq!(classify_windows_codex_processes(&[daemon]), (vec![421], 0));
         // A non-managed-installation executable is detected but the runtime
@@ -263,14 +267,19 @@ mod tests {
 
     #[test]
     fn rejects_an_unrelated_executable_in_command_line() {
-        assert!(!is_managed_daemon(&process("other.exe app-server --managed-daemon")));
+        assert!(!is_managed_daemon(&process(
+            "other.exe app-server --managed-daemon"
+        )));
     }
 
     #[test]
     fn trailing_spaces_and_escaped_config_quotes_work() {
         let daemon = process(r#"codex.exe app-server -c "label=\"example\"" --managed-daemon  "#);
         assert!(is_managed_daemon(&daemon));
-        assert_eq!(windows_arguments(r#"codex.exe "a\\\"b""#).unwrap()[1], "a\\\"b");
+        assert_eq!(
+            windows_arguments(r#"codex.exe "a\\\"b""#).unwrap()[1],
+            "a\\\"b"
+        );
     }
 
     #[test]
@@ -297,8 +306,19 @@ mod tests {
 
     #[test]
     fn reads_only_valid_pid_records() {
-        assert_eq!(parse_daemon_pid(r#"{"pid":421,"processStartTime":"ignored"}"#), Some(421));
-        for record in ["", "bad", "{}", r#"{"pid":"421"}"#, r#"{"pid":0}"#, r#"{"pid":-1}"#, r#"{"pid":4294967296}"#] {
+        assert_eq!(
+            parse_daemon_pid(r#"{"pid":421,"processStartTime":"ignored"}"#),
+            Some(421)
+        );
+        for record in [
+            "",
+            "bad",
+            "{}",
+            r#"{"pid":"421"}"#,
+            r#"{"pid":0}"#,
+            r#"{"pid":-1}"#,
+            r#"{"pid":4294967296}"#,
+        ] {
             assert_eq!(parse_daemon_pid(record), None, "{record}");
         }
     }

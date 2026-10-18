@@ -182,7 +182,10 @@ fn close_codex_processes_blocking(
 
     for pid in targets.iter().copied() {
         #[cfg(windows)]
-        if managed_daemons.iter().any(|daemon| daemon.process_id == pid) {
+        if managed_daemons
+            .iter()
+            .any(|daemon| daemon.process_id == pid)
+        {
             continue;
         }
 
@@ -214,8 +217,7 @@ fn close_codex_processes_blocking(
     // lifecycle failure and continue as though the daemon had stopped.
     #[cfg(windows)]
     for daemon in &managed_daemons {
-        windows_daemon::stop_for_confirmed_close(daemon)
-            .map_err(|error| format!("{error:#}"))?;
+        windows_daemon::stop_for_confirmed_close(daemon).map_err(|error| format!("{error:#}"))?;
         killed_pids.push(daemon.process_id);
     }
 
