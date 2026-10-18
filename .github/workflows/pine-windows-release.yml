@@ -1,0 +1,185 @@
+name: Pine Windows prerelease
+
+on:
+  push:
+    branches: [release/windows-v0.2.21-pine.1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pine-windows-v0.2.21-pine.1
+  cancel-in-progress: false
+
+env:
+  RELEASE_VERSION: 0.2.21-pine.1
+  RELEASE_TAG: v0.2.21-pine.1
+  SOURCE_BASE: e69e4260e22d2b8336d682e432e6795ccefa2368
+
+jobs:
+  build:
+    if: github.repository == 'Pine-24/codex-switcher' && github.ref == 'refs/heads/release/windows-v0.2.21-pine.1'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Validate and prepare release source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$SOURCE_BASE" "$GITHUB_SHA"
+          node --test tests/preparePineRelease.test.mjs
+          node scripts/prepare-pine-release.mjs
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          export GIT_AUTHOR_DATE="$(git show -s --format=%cI "$GITHUB_SHA")"
+          export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
+          git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git commit -m "chore(release): prepare $RELEASE_TAG Windows package"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Frontend tests and production build
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm test
+          pnpm build
+      - name: Native Windows Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build unsigned Windows x64 installer
+        run: pnpm tauri:win build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
+      - name: Install and start the packaged application on the Windows runner
+        shell: pwsh
+        env:
+          PREPARED_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_x64-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          $binary = (Resolve-Path 'src-tauri/target/x86_64-pc-windows-msvc/release/codex-switcher.exe').Path
+          $bytes = [IO.File]::ReadAllBytes($binary)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550 -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) { throw 'Expected an x86_64 PE executable' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'codex-switcher-pine-smoke'
+          $installer = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/S', "/D=$installDir") -PassThru
+          if (-not $installer.WaitForExit(120000)) { $installer.Kill(); throw 'Silent installation timed out' }
+          if ($installer.ExitCode -ne 0) { throw "Silent installation failed: $($installer.ExitCode)" }
+          $installedBinary = Join-Path $installDir 'codex-switcher.exe'
+          if (-not (Test-Path $installedBinary)) { throw 'Installed binary not found' }
+          if ((Get-FileHash $binary).Hash -ne (Get-FileHash $installedBinary).Hash) { throw 'Installed binary differs from build output' }
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP 'pine-smoke-codex-home'
+          New-Item -ItemType Directory -Force $env:CODEX_HOME | Out-Null
+          $app = Start-Process -FilePath $installedBinary -PassThru
+          try {
+            Start-Sleep -Seconds 10
+            $app.Refresh()
+            if ($app.HasExited) { throw "Packaged application exited during startup: $($app.ExitCode)" }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
+          New-Item -ItemType Directory -Force 'release-output/assets' | Out-Null
+          $assetName = "Codex-Switcher-Pine_$($env:RELEASE_VERSION)_windows-x64-setup.exe"
+          Copy-Item $installers[0].FullName "release-output/assets/$assetName"
+          $info = [ordered]@{
+            version = $env:RELEASE_VERSION
+            tag = $env:RELEASE_TAG
+            source_sha = $env:PREPARED_SOURCE_SHA
+            merged_fix_base_sha = $env:SOURCE_BASE
+            workflow_sha = $env:GITHUB_SHA
+            workflow_run = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            runner_os = [Environment]::OSVersion.VersionString
+            target = 'x86_64-pc-windows-msvc'
+            rustc = (rustc --version)
+            unsigned = $true
+            updates = 'manual; upstream feed disabled'
+            verification = @('frontend tests', 'production frontend build', 'native Windows cargo test', 'release NSIS build', 'PE x64 header', 'silent install exit 0', 'installed binary hash matches', 'packaged app survived 10 seconds')
+            not_verified = @('Windows 11 user device', 'live OAuth account switch', 'managed daemon shutdown with real Codex work')
+          }
+          $info | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM 'release-output/assets/BUILD-INFO.json'
+          $checksums = Get-ChildItem 'release-output/assets' -File | Sort-Object Name | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
+          $checksums | Set-Content -Encoding utf8NoBOM 'release-output/assets/SHA256SUMS.txt'
+      - name: Export exact prepared source for the release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git bundle create release-output/release-source.bundle HEAD "^$GITHUB_SHA"
+          cp docs/releases/v0.2.21-pine.1.md release-output/RELEASE-NOTES.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pine-windows-release
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: pine-windows-release
+          path: release-output
+      - name: Verify source and publish complete prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARED_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PREPARED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git bundle verify release-output/release-source.bundle
+          git fetch release-output/release-source.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$PREPARED_SOURCE_SHA"
+          test "$(git rev-parse "$PREPARED_SOURCE_SHA^")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$SOURCE_BASE" "$PREPARED_SOURCE_SHA"
+          test "$(git diff --name-only "$GITHUB_SHA" "$PREPARED_SOURCE_SHA" | sort)" = "$(printf '%s\n' package.json src-tauri/Cargo.lock src-tauri/Cargo.toml src-tauri/tauri.conf.json | sort)"
+          (cd release-output/assets && sha256sum --check SHA256SUMS.txt)
+          test "$(jq -r .source_sha release-output/assets/BUILD-INFO.json)" = "$PREPARED_SOURCE_SHA"
+          gh auth setup-git
+          # Only a release tag is pushed; main and user branches are never updated.
+          if tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2> tag-error.txt); then
+            test "$tag_sha" = "$PREPARED_SOURCE_SHA"
+          elif grep -q 'HTTP 404' tag-error.txt; then
+            git push origin "$PREPARED_SOURCE_SHA:refs/tags/$RELEASE_TAG"
+          else
+            cat tag-error.txt >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft > release-state.txt 2> release-error.txt; then
+            test "$(cat release-state.txt)" = 'true' || { echo 'Refusing to replace an already published release' >&2; exit 1; }
+          elif grep -qi 'release not found\|HTTP 404' release-error.txt; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --title "Codex Switcher Pine $RELEASE_TAG (Windows x64)" --notes-file release-output/RELEASE-NOTES.md
+          else
+            cat release-error.txt >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" release-output/assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,isDraft,isPrerelease,assets
