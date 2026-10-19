@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 mod desktop_reopen;
 pub use desktop_reopen::*;
 
+#[cfg(target_os = "linux")]
+#[path = "linux_process.rs"]
+mod linux_process;
+
 #[cfg(any(windows, test))]
 #[path = "windows_daemon.rs"]
 mod windows_daemon;
@@ -52,6 +56,7 @@ pub struct CodexProcessInfo {
     pub can_switch: bool,
     /// Process IDs of active Codex app instances
     pub pids: Vec<u32>,
+    pub wsl_count: usize,
 }
 
 /// Summary of a close operation for active Codex processes.
@@ -77,28 +82,38 @@ const CODEX_RUNNING_SWITCH_BLOCKED_PREFIX: &str = "Cannot switch accounts while 
 /// Check for running Codex processes
 #[tauri::command]
 pub async fn check_codex_processes() -> Result<CodexProcessInfo, String> {
+    tokio::task::spawn_blocking(check_codex_processes_blocking)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn check_codex_processes_blocking() -> Result<CodexProcessInfo, String> {
     let (pids, bg_count) = find_codex_processes().map_err(|e| e.to_string())?;
-    let count = pids.len();
+    let wsl_count = crate::auth::wsl::blocking_count().map_err(|error| error.to_string())?;
+    let count = pids.len() + wsl_count;
 
     Ok(CodexProcessInfo {
         count,
         background_count: bg_count,
         can_switch: count == 0,
         pids,
+        wsl_count,
     })
 }
 
 pub(crate) fn ensure_codex_not_running() -> Result<(), String> {
     let (pids, _) = find_codex_processes().map_err(|e| e.to_string())?;
 
-    if pids.is_empty() {
+    let wsl_count = crate::auth::wsl::blocking_count().map_err(|error| error.to_string())?;
+    let count = pids.len() + wsl_count;
+    if count == 0 {
         return Ok(());
     }
 
     Err(format!(
         "{CODEX_RUNNING_SWITCH_BLOCKED_PREFIX}{} Codex process{} running",
-        pids.len(),
-        if pids.len() == 1 { " is" } else { "es are" }
+        count,
+        if count == 1 { " is" } else { "es are" }
     ))
 }
 
@@ -113,6 +128,7 @@ pub async fn kill_codex_processes(
     reopen_desktop: Option<bool>,
     force_close: Option<bool>,
 ) -> Result<KillCodexProcessesResult, String> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
     tokio::task::spawn_blocking(move || {
         close_codex_processes_blocking(
             reopen_desktop.unwrap_or(false),
@@ -128,6 +144,7 @@ fn close_codex_processes_blocking(
     force_close: bool,
 ) -> Result<KillCodexProcessesResult, String> {
     let (pids, _) = find_codex_processes().map_err(|e| e.to_string())?;
+    let wsl_count = crate::auth::wsl::blocking_count().map_err(|error| error.to_string())?;
     // Capture exact desktop identities before termination. Detection failure must
     // never prevent the existing close-only flow.
     let desktops = if reopen_desktop || (cfg!(target_os = "macos") && !force_close) {
@@ -135,7 +152,7 @@ fn close_codex_processes_blocking(
     } else {
         Vec::new()
     };
-    let targeted_count = pids.len();
+    let targeted_count = pids.len() + wsl_count;
     let mut killed_pids = Vec::new();
     let mut failed_pids = Vec::new();
 
@@ -261,6 +278,9 @@ fn close_codex_processes_blocking(
             .collect();
     }
 
+    if wsl_count > 0 {
+        crate::auth::wsl::close_selected().map_err(|error| error.to_string())?;
+    }
     let reopen_token = desktop_reopen::remember_closed_desktops(desktops, &killed_pids);
     Ok(KillCodexProcessesResult {
         targeted_count,
@@ -475,7 +495,14 @@ fn process_exists(pid: u32) -> bool {
 
 /// Find all running codex processes. Returns (active_pids, background_count)
 fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    {
+        return linux_process::blocking_pids()
+            .map(|pids| (pids, 0))
+            .map_err(anyhow::Error::msg);
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         let mut pids = Vec::new();
         let mut bg_count = 0;
@@ -668,6 +695,8 @@ fn read_windows_codex_processes() -> anyhow::Result<Vec<WindowsCodexProcess>> {
     // which inflates the badge and incorrectly blocks switching. Use PowerShell so we can inspect
     // the command line and only count live top-level app instances.
     const POWERSHELL_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $windowTitles = @{}
 Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
   $windowTitles[[uint32]$_.Id] = $_.MainWindowTitle
@@ -714,52 +743,37 @@ Get-CimInstance Win32_Process |
 
 #[cfg(any(windows, test))]
 fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u32>, usize) {
-    let mut active_pids = Vec::new();
-    let mut ignored_count = 0;
-
+    let roots: Vec<_> = processes
+        .iter()
+        .filter(|process| is_windows_codex_root_process(process))
+        .map(|process| process.process_id)
+        .collect();
+    let mut active_pids = roots.clone();
     for process in processes {
-        // The daemon can have neither a window nor an Electron renderer.
-        // Detect it before both the resources\codex.exe and IDE exclusions.
-        if windows_daemon::is_managed_daemon(process) {
-            active_pids.push(process.process_id);
-            continue;
-        }
-        if !is_windows_codex_root_process(process) {
-            continue;
-        }
-
-        let command = process.command_line.to_ascii_lowercase();
-        if is_ide_plugin_process(&command) {
-            ignored_count += 1;
-            continue;
-        }
-
-        let has_window = !process.main_window_title.trim().is_empty();
-        let has_renderer =
-            windows_has_descendant_matching(process.process_id, processes, |child| {
-                child
+        if windows_daemon::is_managed_daemon(process)
+            || (process.name.eq_ignore_ascii_case("codex.exe")
+                && !process
                     .command_line
                     .to_ascii_lowercase()
-                    .contains("--type=renderer")
-            });
-        let has_app_server =
-            windows_has_descendant_matching(process.process_id, processes, |child| {
-                let command = normalize_windows_path(&child.command_line);
-                command.contains("resources\\codex.exe") && command.contains("app-server")
-            });
-
-        if has_window || has_renderer || has_app_server {
+                    .contains("--type=")
+                && !process
+                    .command_line
+                    .to_ascii_lowercase()
+                    .contains("codex-switcher")
+                && !roots.iter().any(|root| {
+                    windows_has_descendant_matching(*root, processes, |child| {
+                        child.process_id == process.process_id
+                    })
+                }))
+        {
             active_pids.push(process.process_id);
-        } else {
-            // Ignore stale helper trees left behind after the window has already closed.
-            ignored_count += 1;
         }
     }
 
     active_pids.sort_unstable();
     active_pids.dedup();
 
-    (active_pids, ignored_count)
+    (active_pids, 0)
 }
 
 #[cfg(any(windows, test))]
@@ -1120,7 +1134,33 @@ mod tests {
     }
 
     #[test]
-    fn ignores_stale_legacy_and_current_windows_roots() {
+    fn windows_orphan_backend_and_ide_cli_block_without_windows() {
+        let processes = vec![
+            windows_process(
+                "Codex.exe",
+                300,
+                1,
+                r"C:\Apps\Codex\resources\codex.exe",
+                "codex.exe app-server",
+                "",
+            ),
+            windows_process(
+                "Codex.exe",
+                301,
+                1,
+                r"C:\Users\Test\.vscode\extensions\codex.exe",
+                "codex.exe",
+                "",
+            ),
+        ];
+        assert_eq!(
+            classify_windows_codex_processes(&processes),
+            (vec![300, 301], 0)
+        );
+    }
+
+    #[test]
+    fn headless_legacy_and_current_windows_roots_still_block_switching() {
         let processes = vec![
             windows_process(
                 "Codex.exe",
@@ -1140,7 +1180,10 @@ mod tests {
             ),
         ];
 
-        assert_eq!(classify_windows_codex_processes(&processes), (vec![], 2));
+        assert_eq!(
+            classify_windows_codex_processes(&processes),
+            (vec![100, 200], 0)
+        );
     }
 
     #[test]

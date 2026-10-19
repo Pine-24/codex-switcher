@@ -107,6 +107,66 @@ The browser dashboard serves the same UI and backend actions through `/api/invok
 
 ## Usage and Reset Credits
 
+### Account switching on Windows and Ubuntu
+
+No separate launcher is needed with the updated Switcher. On Windows and native
+Ubuntu, the default account folder is the current user's `.codex` directory
+(or `CODEX_HOME` when set). Settings are local to each device; choose a custom
+folder in **Settings → Codex account folder** when Codex uses another location.
+The folder picker and direct path entry are both supported.
+
+Windows and WSL can use different `CODEX_HOME` directories. A Windows Switcher
+updating `%USERPROFILE%\.codex\auth.json` does not update a Desktop app-server
+using `/home/your-user/.codex/auth.json` inside WSL.
+
+In **Settings → Codex account folder**, enter the existing folder used by Codex,
+for example `\\wsl.localhost\Ubuntu\home\your-user\.codex`. Save the folder,
+then select the desired account. Saving the folder clears Switcher's Active
+marker without copying credentials; the next switch writes only to that folder.
+Leave the setting blank to restore `CODEX_HOME` / the default directory.
+The WSL folder must already contain `auth.json` from a Codex login; switching
+updates that existing file and preserves its Linux permissions.
+
+When Codex is running, use Switcher's close-and-switch confirmation. Windows
+native CLI/app-server processes and Ubuntu headless/background Codex processes
+are blockers even without a visible window. On Windows with a WSL target, the
+confirmation also covers matching Codex sessions and their Linux Desktop in that
+distribution. WSL shutdown uses an embedded helper (no repository checkout or
+external launcher required), needs `/usr/bin/python3` with pidfd support, and
+sends only SIGTERM even when the native Force close option is selected. It can
+disconnect Windows Codex chats too. Other WSL apps and distributions are not
+stopped. Uninspectable, unknown, or remaining processes block switching.
+
+After switching, supported native desktops captured before closing can reopen
+with the existing confirmation setting. Ubuntu captures the executable of the
+running desktop and verifies its adjacent `resources/codex`; unsupported desktop
+packages and WSL desktops should be reopened manually. An account already marked
+Active can be applied again with **Reapply account**. Always verify the account
+in Codex after reopening.
+
+This supports file-based `auth.json` authentication; it does not change Codex's
+credential-store configuration or update OS keyring entries. Verify the account
+shown by Codex after reopening; Switcher's Active marker records its selection,
+not the account observed inside Desktop.
+
+For an existing Windows build without the folder setting, the optional launcher
+`scripts/Start-PineForWsl.ps1 -WslHome '\\wsl.localhost\Ubuntu\home\your-user\.codex'`
+starts the installed Switcher with `CODEX_HOME` set only for that child process.
+Exit Switcher using its tray menu and close Codex first. Use `-CheckOnly` to
+check the paths without launching anything. The launcher does not install an
+update or alter persistent environment variables. Older builds still have the
+selected-account no-op: select a different account when testing. Their process
+checks also remain unchanged, so keep WSL Codex sessions closed while switching.
+
+To stop remaining WSL Codex processes as part of launch, add `-StopWslCodex`.
+Run this from Windows, save your work, and type `STOP` at the confirmation prompt.
+This can disconnect Windows Desktop and this chat as well as Linux Desktop/CLI
+sessions. Only recognized same-user Codex processes using the selected
+`CODEX_HOME` (or their default home), and their associated Linux Desktop, receive SIGTERM; other WSL apps
+are not stopped. The helper requires `/usr/bin/python3` with pidfd support.
+Unknown or remaining processes block launch; it never uses `wsl --shutdown` or
+SIGKILL. `-CheckOnly` remains read-only even with `-StopWslCodex`.
+
 Codex Switcher shows two kinds of account usage information:
 
 - **Rate limits** – the account card shows the current 5-hour and weekly limit

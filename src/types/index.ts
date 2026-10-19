@@ -105,6 +105,7 @@ export interface AccountWithUsage extends AccountInfo {
 }
 
 export interface CodexProcessInfo {
+  wsl_count?: number;
   count: number;
   background_count: number;
   can_switch: boolean;

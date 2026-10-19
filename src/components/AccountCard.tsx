@@ -370,10 +370,12 @@ export function AccountCard({
       <div className="flex gap-2 mt-3">
         {account.is_active ? (
           <button
-            disabled
-            className="flex-1 px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 cursor-default"
+            onClick={onSwitch}
+            disabled={switching || switchDisabled}
+            title="Reapply this account to the configured Codex home"
+            className="flex-1 px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 disabled:opacity-50"
           >
-            ✓ Active
+            {switching ? "Switching..." : "Reapply account"}
           </button>
         ) : (
           <button

@@ -118,6 +118,29 @@ pub fn get_display_settings() -> Result<DisplaySettings, String> {
     })
 }
 
+#[derive(serde::Serialize)]
+pub struct CodexHomeSettings {
+    path: String,
+    override_path: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_codex_home_settings() -> Result<CodexHomeSettings, String> {
+    let settings = load_app_settings().map_err(|error| error.to_string())?;
+    let path = crate::auth::get_codex_home().map_err(|error| error.to_string())?;
+    Ok(CodexHomeSettings {
+        path: path.to_string_lossy().into_owned(),
+        override_path: settings.codex_home_override,
+    })
+}
+
+#[tauri::command]
+pub async fn set_codex_home_override(path: Option<String>) -> Result<CodexHomeSettings, String> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    crate::auth::set_codex_home_override(path).map_err(|error| error.to_string())?;
+    get_codex_home_settings()
+}
+
 #[tauri::command]
 pub fn set_tray_display_mode(app: AppHandle, mode: TrayDisplayMode) -> Result<(), String> {
     #[cfg(desktop)]

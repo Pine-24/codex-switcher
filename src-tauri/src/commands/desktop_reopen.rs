@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DesktopTarget {
+    #[cfg(target_os = "linux")]
+    LinuxExecutable(String),
     #[cfg(any(target_os = "macos", test))]
     MacBundle(String),
     #[cfg(any(windows, test))]
@@ -43,7 +45,7 @@ pub async fn get_codex_reopen_info() -> Result<CodexReopenInfo, String> {
         let (pids, _) = super::find_codex_processes().map_err(|e| e.to_string())?;
         let desktops = capture_desktops(&pids)?;
         Ok(CodexReopenInfo {
-            supported: cfg!(any(target_os = "macos", windows)),
+            supported: cfg!(any(target_os = "macos", target_os = "linux", windows)),
             desktop_count: desktops.len(),
         })
     })
@@ -108,7 +110,22 @@ pub(super) fn capture_desktops(pids: &[u32]) -> Result<Vec<CapturedDesktop>, Str
         }
     }
 
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        let processes = super::linux_process::snapshot()?;
+        for process in super::linux_process::desktop_roots(&processes) {
+            if pids.contains(&process.pid) {
+                desktops.push(CapturedDesktop {
+                    pid: process.pid,
+                    target: DesktopTarget::LinuxExecutable(
+                        process.executable.to_string_lossy().into_owned(),
+                    ),
+                });
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = (pids, &mut desktops);
     Ok(desktops)
 }
@@ -305,6 +322,20 @@ fn wait_for_desktops(
 
 fn launch_desktop(target: &DesktopTarget) -> bool {
     match target {
+        #[cfg(target_os = "linux")]
+        DesktopTarget::LinuxExecutable(path) => {
+            let Ok(home) = crate::auth::get_codex_home() else {
+                return false;
+            };
+            super::linux_process::is_desktop_executable(std::path::Path::new(path))
+                && super::Command::new(path)
+                    .env("CODEX_HOME", home)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .is_ok()
+        }
         #[cfg(target_os = "macos")]
         DesktopTarget::MacBundle(bundle) => {
             is_codex_bundle(bundle)

@@ -431,6 +431,7 @@ function App() {
           prev.can_switch === info.can_switch &&
           prev.count === info.count &&
           prev.background_count === info.background_count &&
+          prev.wsl_count === info.wsl_count &&
           prev.pids.length === info.pids.length &&
           prev.pids.every((pid, index) => pid === info.pids[index])
         ) {
@@ -1825,7 +1826,7 @@ function App() {
                   </h2>
                   <AccountCard
                     account={activeAccount}
-                    onSwitch={() => { }}
+                    onSwitch={() => handleSwitch(activeAccount.id)}
                     onWarmup={() =>
                       handleWarmupAccount(activeAccount.id, activeAccount.name)
                     }
@@ -1989,6 +1990,7 @@ function App() {
 
       {isSettingsOpen && (
         <SettingsModal
+          onCodexHomeSaved={() => { void loadAccounts(true); void checkProcesses(); }}
           reopenPreference={desktopReopen.preference}
           onReopenPreferenceChange={saveDesktopReopenPreference}
           closePreference={codexClose.preference}
@@ -2034,6 +2036,9 @@ function App() {
                   </>
                 )}
               </div>
+              {(processInfo?.wsl_count ?? 0) > 0 && (
+                <p className="text-sm text-orange-700 dark:text-orange-300">This includes WSL Codex sessions and their Linux Desktop. Windows Codex and chats may disconnect. WSL sessions receive a normal termination request even when Force close is selected; unrelated WSL apps are not stopped. WSL desktops must be reopened manually.</p>
+              )}
               {pendingSwitchAccount && (
                 <p className="text-sm text-gray-600 dark:text-gray-300">
                   After closing Codex, Codex Switcher will switch to{" "}
