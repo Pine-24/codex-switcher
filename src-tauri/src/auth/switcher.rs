@@ -13,24 +13,13 @@ use crate::types::{
 
 /// Get the official Codex home directory
 pub fn get_codex_home() -> Result<PathBuf> {
-    if let Some(path) = super::load_app_settings()?.codex_home_override {
-        return validate_codex_home(&path);
-    }
-    #[cfg(test)]
-    {
-        Ok(super::test_support::home_dir()?.join(".codex"))
-    }
-
-    #[cfg(not(test))]
-    {
-        // Check for CODEX_HOME environment variable first
-        if let Ok(codex_home) = std::env::var("CODEX_HOME") {
-            return validate_codex_home(&codex_home);
-        }
-
-        let home = dirs::home_dir().context("Could not find home directory")?;
-        Ok(home.join(".codex"))
-    }
+    let selection = super::home_detection::resolve()?;
+    let path = selection.path.context(
+        selection
+            .error
+            .unwrap_or_else(|| "Select a Codex account folder in Settings".into()),
+    )?;
+    validate_codex_home(&path)
 }
 
 pub fn validate_codex_home(value: &str) -> Result<PathBuf> {
@@ -98,7 +87,23 @@ pub fn set_codex_home_override(path: Option<String>) -> Result<()> {
     accounts.active_account_id = None;
     super::save_accounts(&accounts)?;
     settings.codex_home_override = path;
-    super::save_app_settings(&settings)
+    super::save_app_settings(&settings)?;
+    super::home_detection::clear_cache()
+}
+
+pub fn rediscover_codex_home() -> Result<()> {
+    let mut accounts = super::load_accounts()?;
+    if get_codex_home().is_ok() {
+        if let Some(auth) = read_current_auth()? {
+            super::sync_active_account_tokens(&mut accounts, &auth);
+        }
+    }
+    accounts.active_account_id = None;
+    super::save_accounts(&accounts)?;
+    let mut settings = super::load_app_settings()?;
+    settings.codex_home_override = None;
+    super::save_app_settings(&settings)?;
+    super::home_detection::clear_cache()
 }
 
 pub fn get_codex_auth_file() -> Result<PathBuf> {

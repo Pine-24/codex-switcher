@@ -1,5 +1,8 @@
 //! Authentication module
 
+pub mod home_detection;
+#[cfg(any(windows, test))]
+mod home_probe;
 pub mod oauth_server;
 pub mod storage;
 pub mod switcher;

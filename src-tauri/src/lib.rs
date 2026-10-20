@@ -61,6 +61,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_codex_home_settings,
+            commands::refresh_codex_home_detection,
             commands::set_codex_home_override,
             commands::get_display_settings,
             commands::set_tray_display_mode,

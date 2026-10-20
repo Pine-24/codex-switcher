@@ -10,6 +10,33 @@ spec.loader.exec_module(stopper)
 
 
 class StopWslCodexTests(unittest.TestCase):
+    def test_discovery_returns_only_home_paths_and_deduplicates_processes(self):
+        target = {"pid": 100, "name": "codex", "parent": 1, "uid": stopper.os.getuid(), "exe": "/opt/custom/codex"}
+        child = {**target, "pid": 101}
+        with patch.object(stopper, "all_processes", return_value={100: target, 101: child}), patch.object(Path, "read_bytes", return_value=b"CODEX_HOME=/tmp/codex-home\0PRIVATE_TOKEN=never-output\0"), patch.object(stopper, "inspect_process", side_effect=[target, child]):
+            self.assertEqual(stopper.discover_homes(), ["/tmp/codex-home"])
+
+    def test_discovery_does_not_open_pidfds_or_send_signals(self):
+        with patch.object(sys, "argv", ["helper", "--discover"]), patch.object(stopper, "discover_homes", return_value=["/tmp"]), patch.object(stopper.os, "pidfd_open") as opened, patch.object(stopper.signal, "pidfd_send_signal") as sent:
+            self.assertEqual(stopper.main(), 0)
+            opened.assert_not_called()
+            sent.assert_not_called()
+
+    def test_discovery_detects_conflicting_homes_without_selecting_one(self):
+        target = {"pid": 100, "name": "codex", "parent": 1, "uid": stopper.os.getuid(), "exe": "/opt/custom/codex"}
+        child = {**target, "pid": 101}
+        with patch.object(stopper, "all_processes", return_value={100: target, 101: child}), patch.object(stopper, "process_home", side_effect=["/a", "/b"]), patch.object(stopper, "inspect_process", side_effect=[target, child]):
+            self.assertEqual(stopper.discover_homes(), ["/a", "/b"])
+
+    def test_detection_rejects_relative_home_and_changed_process_identity(self):
+        with patch.object(Path, "read_bytes", return_value=b"CODEX_HOME=relative\0"):
+            with self.assertRaisesRegex(RuntimeError, "non-absolute"):
+                stopper.process_home(100)
+        target = {"pid": 100, "name": "codex", "parent": 1, "uid": stopper.os.getuid(), "exe": "/opt/custom/codex"}
+        with patch.object(stopper, "all_processes", return_value={100: target}), patch.object(stopper, "process_home", return_value="/tmp"), patch.object(stopper, "inspect_process", return_value={**target, "parent": 2}):
+            with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                stopper.discover_homes()
+
     def test_trusted_executables(self):
         home = "/home/test/.codex"
         self.assertTrue(stopper.trusted_executable(home + "/packages/standalone/releases/version/bin/codex", home))

@@ -146,3 +146,37 @@ Remaining acceptance: build the complete Windows/Ubuntu apps, test Settings and
 close-and-switch via Tauri IPC, and confirm a real account change/reopen on each
 native OS and Windows-to-WSL. File-based authentication is the supported contract;
 OS keyring-backed Codex authentication is not covered.
+
+## Automatic selection (PR #2 follow-up)
+
+Manual folder entry is now an advanced override, not the primary setup flow.
+Without that override or an explicit Switcher `CODEX_HOME`, the resolver uses
+observed running Linux/WSL Codex homes, the remembered device-local selection,
+and existing login locations in that order. Multiple distinct live homes or
+multiple existing logins require selection. An unknown probe result is not an
+empty success. Stopped WSL distributions are not started merely for discovery;
+without live evidence or a remembered selection, the user is asked to start the
+desired environment and retry or select a folder.
+
+The selected path and detection source are shown in Settings. Discovery is
+rechecked on process polling (with a short cache) and before a close/switch under
+the authentication-operation lock. The remembered path prevents closing a WSL
+server from redirecting the subsequent write back to the native Windows folder.
+Unavailable remembered folders block rather than silently falling back.
+Discovery reads process-home metadata and file existence, not auth contents.
+Its non-secret state is stored in `detected-codex-home.json` beside local settings.
+Explicit manual selection bypasses failed detection.
+
+Native Windows defaults are inferred from the normal login location; this does
+not read native Windows processes' environment blocks. Native Codex detected
+alongside observed WSL Codex therefore requires confirmation instead of claiming
+that either home is authoritative. Custom native Windows per-process homes
+remain a manual-override case.
+
+The previous PR head `d5dc874` passed all six hosted checks, including full
+Ubuntu Rust tests and Windows compilation/tests. That is not validation of this
+follow-up. Follow-up local evidence: 66 isolated Rust tests, 38 Node tests, 13
+Python tests, frontend build, and Windows-target compilation passed. A read-only
+live probe returned the WSL home and also detected a native Windows Codex process,
+which is intentionally treated as a conflict rather than guessed away.
+No real account switch or termination was performed for this follow-up.

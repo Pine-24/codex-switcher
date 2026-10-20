@@ -198,6 +198,7 @@ function App() {
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
+  const processCheckErrorRef = useRef<string | null>(null);
   const [pendingSwitchAccountId, setPendingSwitchAccountId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isOpeningCodex, setIsOpeningCodex] = useState(false);
@@ -425,6 +426,7 @@ function App() {
   const checkProcesses = useCallback(async () => {
     try {
       const info = await invokeBackend<CodexProcessInfo>("check_codex_processes");
+      processCheckErrorRef.current = null;
       setProcessInfo((prev) => {
         if (
           prev &&
@@ -442,6 +444,8 @@ function App() {
       return info;
     } catch (err) {
       console.error("Failed to check processes:", err);
+      processCheckErrorRef.current = String(err);
+      setProcessInfo(null);
       return null;
     }
   }, []);
@@ -558,7 +562,10 @@ function App() {
       setSwitchingId(accountId);
       const latestProcessInfo = await checkProcesses();
       if (!latestProcessInfo) {
-        showWarmupToast("Could not check running Codex processes. Try again.", true);
+        showWarmupToast(processCheckErrorRef.current ?? "Could not check running Codex processes. Try again.", true);
+        if (processCheckErrorRef.current?.includes("Codex account folder needs attention:")) {
+          setIsSettingsOpen(true);
+        }
         return;
       }
       if (!latestProcessInfo.can_switch) {

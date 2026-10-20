@@ -9,7 +9,7 @@ pub use desktop_reopen::*;
 
 #[cfg(target_os = "linux")]
 #[path = "linux_process.rs"]
-mod linux_process;
+pub(crate) mod linux_process;
 
 #[cfg(any(windows, test))]
 #[path = "windows_daemon.rs"]
@@ -82,12 +82,14 @@ const CODEX_RUNNING_SWITCH_BLOCKED_PREFIX: &str = "Cannot switch accounts while 
 /// Check for running Codex processes
 #[tauri::command]
 pub async fn check_codex_processes() -> Result<CodexProcessInfo, String> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
     tokio::task::spawn_blocking(check_codex_processes_blocking)
         .await
         .map_err(|error| error.to_string())?
 }
 
 fn check_codex_processes_blocking() -> Result<CodexProcessInfo, String> {
+    crate::auth::home_detection::refresh_for_operation(false).map_err(|error| error.to_string())?;
     let (pids, bg_count) = find_codex_processes().map_err(|e| e.to_string())?;
     let wsl_count = crate::auth::wsl::blocking_count().map_err(|error| error.to_string())?;
     let count = pids.len() + wsl_count;
@@ -143,6 +145,7 @@ fn close_codex_processes_blocking(
     reopen_desktop: bool,
     force_close: bool,
 ) -> Result<KillCodexProcessesResult, String> {
+    crate::auth::home_detection::refresh_for_operation(true).map_err(|error| error.to_string())?;
     let (pids, _) = find_codex_processes().map_err(|e| e.to_string())?;
     let wsl_count = crate::auth::wsl::blocking_count().map_err(|error| error.to_string())?;
     // Capture exact desktop identities before termination. Detection failure must

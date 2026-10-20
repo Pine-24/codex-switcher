@@ -2,13 +2,13 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub(super) struct LinuxProcess {
+pub(crate) struct LinuxProcess {
     pub pid: u32,
     pub parent: u32,
     pub executable: PathBuf,
 }
 
-pub(super) fn is_codex_executable(path: &Path) -> bool {
+pub(crate) fn is_codex_executable(path: &Path) -> bool {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -26,7 +26,7 @@ pub(super) fn is_desktop_executable(path: &Path) -> bool {
         .is_some_and(|parent| parent.join("resources/codex").is_file())
 }
 
-pub(super) fn snapshot() -> Result<Vec<LinuxProcess>, String> {
+pub(crate) fn snapshot() -> Result<Vec<LinuxProcess>, String> {
     let uid = fs::metadata("/proc/self")
         .map_err(|error| error.to_string())?
         .uid();
