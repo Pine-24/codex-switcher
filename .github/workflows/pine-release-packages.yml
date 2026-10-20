@@ -62,12 +62,11 @@ jobs:
           git diff --check
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
-      - name: Frontend and mocked process tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm test
-          python -m unittest discover -s tests -p 'test_stop_wsl_codex.py'
+      - name: Frontend tests
+        run: pnpm test
+      - name: Mocked Linux WSL process tests
+        if: runner.os == 'Linux'
+        run: python3 -m unittest discover -s tests -p 'test_stop_wsl_codex.py'
       - name: Native Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Build unsigned manual-update packages
@@ -142,7 +141,7 @@ jobs:
             workflow_run: `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             unsigned: true,
             updates: "manual; upstream feed disabled",
-            verification: ["release configuration tests", "frontend tests", "mocked Python tests", "native Rust tests", "locked release build", ...(process.env.RELEASE_PLATFORM === "windows-x64" ? ["PE x64 header", "silent install", "exact NSIS marker binary comparison", "10 second startup"] : ["DEB version and architecture", "AppImage ELF architecture"])],
+            verification: ["release configuration tests", "frontend tests", "native Rust tests", "locked release build", ...(process.env.RELEASE_PLATFORM === "windows-x64" ? ["PE x64 header", "silent install", "exact NSIS marker binary comparison", "10 second startup"] : ["mocked Linux WSL Python tests", "DEB version and architecture", "AppImage ELF architecture"])],
             not_verified: ["live account switching with this final binary", "Ubuntu device startup"]
           };
           fs.writeFileSync(`release-output/BUILD-INFO-${info.platform}.json`, `${JSON.stringify(info, null, 2)}\n`);
