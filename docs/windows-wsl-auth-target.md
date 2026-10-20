@@ -150,7 +150,7 @@ OS keyring-backed Codex authentication is not covered.
 ## Automatic selection (PR #2 follow-up)
 
 Manual folder entry is now an advanced override, not the primary setup flow.
-Without that override or an explicit Switcher `CODEX_HOME`, the resolver uses
+Without that override, the resolver uses
 observed running Linux/WSL Codex homes, the remembered device-local selection,
 and existing login locations in that order. Multiple distinct live homes or
 multiple existing logins require selection. An unknown probe result is not an
@@ -180,3 +180,31 @@ Python tests, frontend build, and Windows-target compilation passed. A read-only
 live probe returned the WSL home and also detected a native Windows Codex process,
 which is intentionally treated as a conflict rather than guessed away.
 No real account switch or termination was performed for this follow-up.
+
+## Windows test feedback: inherited CODEX_HOME bypass
+
+The user tested the Windows package with a Windows Codex app configured to use
+WSL by default. They accepted the close confirmation and saw switch success,
+but the Codex account did not change. Settings reported `CODEX_HOME` pointing
+at the native Windows default. Read-only checks confirmed that the user-level
+environment variable selects that default while a WSL Codex home also exists
+in running processes. This is evidence of conflicting targets, not proof of
+which account the Desktop actually loaded.
+
+The prior resolver returned immediately for Switcher's inherited `CODEX_HOME`,
+before discovering WSL homes. The WSL close/check helper is scoped to the selected
+folder, so a native selection could close only Windows processes and write only
+the native auth file. It did not establish that the WSL backend had switched.
+
+`CODEX_HOME` is now a candidate, not a discovery bypass. A conflict with a running
+home, an existing login without live evidence, or a different remembered home
+requires explicit selection before closing or writing. Failed discovery still
+blocks. A unique matching environment remains usable and is remembered across
+close-and-switch. A confirmed manual folder remains the escape hatch for an
+unrelated environment or unavailable discovery. No global environment variables
+are removed or changed.
+
+Regression tests cover the inherited-native-environment/live-WSL conflict,
+agreement, conflicting existing logins, unknown WSL, remembered-home conflicts,
+post-close retention, and manual override. Real Windows/WSL account switching
+still needs to be retested with the rebuilt package.

@@ -65,7 +65,7 @@ jobs:
           pnpm exec tauri build \
             --target '${{ matrix.target }}' \
             --bundles '${{ matrix.bundles }}' \
-            --config '{"version":"0.2.22-pine.pr2","bundle":{"createUpdaterArtifacts":false}}'
+            --config '{"version":"0.2.22-pine.pr2.2","bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Collect packages and provenance
         shell: bash
@@ -85,7 +85,7 @@ jobs:
             test "$(find test-packages -name '*.AppImage' | wc -l)" -eq 1
           fi
           {
-            printf 'Version: 0.2.22-pine.pr2\n'
+            printf 'Version: 0.2.22-pine.pr2.2\n'
             printf 'Source: %s\n' "$(git rev-parse HEAD)"
             printf 'Platform: %s\n' "$PACKAGE_PLATFORM"
             printf 'Build: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"

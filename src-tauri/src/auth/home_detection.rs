@@ -77,6 +77,32 @@ fn choose(discovery: Discovery, remembered: Option<HomeCandidate>, default: &str
     }
 }
 
+fn choose_with_environment(
+    mut discovery: Discovery,
+    mut remembered: Option<HomeCandidate>,
+    default: &str,
+    environment: Option<PathBuf>,
+) -> HomeSelection {
+    if let Some(path) = environment {
+        let candidate = HomeCandidate {
+            path: path.to_string_lossy().into_owned(),
+            source: "Switcher CODEX_HOME".into(),
+        };
+        if discovery.live.is_empty() {
+            if remembered
+                .as_ref()
+                .is_some_and(|previous| previous.path != candidate.path)
+            {
+                discovery.available.extend(remembered.take());
+            }
+            discovery.available.push(candidate);
+        } else {
+            discovery.live.push(candidate);
+        }
+    }
+    choose(discovery, remembered, default)
+}
+
 pub fn clear_cache() -> Result<()> {
     let key = super::get_config_dir()?;
     SELECTIONS
@@ -120,16 +146,16 @@ fn default_home() -> Result<PathBuf> {
 }
 
 pub fn resolve() -> Result<HomeSelection> {
+    #[cfg(test)]
+    let environment = None;
+    #[cfg(not(test))]
+    let environment = std::env::var_os("CODEX_HOME");
+    resolve_with_environment(environment)
+}
+
+fn resolve_with_environment(environment: Option<std::ffi::OsString>) -> Result<HomeSelection> {
     if let Some(path) = super::load_app_settings()?.codex_home_override {
         return explicit(path, "Manually selected");
-    }
-    #[cfg(not(test))]
-    if let Some(path) = std::env::var_os("CODEX_HOME") {
-        return explicit(
-            path.into_string()
-                .map_err(|_| anyhow::anyhow!("CODEX_HOME is not valid Unicode"))?,
-            "CODEX_HOME",
-        );
     }
     let key = super::get_config_dir()?;
     let mut selections = SELECTIONS
@@ -141,13 +167,26 @@ pub fn resolve() -> Result<HomeSelection> {
     let default = default_home()?;
     let remembered_file = key.join("detected-codex-home.json");
     let selection = (|| -> Result<HomeSelection> {
+        let environment = environment
+            .map(|path| {
+                let path = path
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("CODEX_HOME is not valid Unicode"))?;
+                super::validate_codex_home(&path)
+            })
+            .transpose()?;
         let remembered = match std::fs::read(&remembered_file) {
             Ok(bytes) => Some(serde_json::from_slice::<HomeCandidate>(&bytes).context("Invalid remembered Codex folder; select a folder manually")?),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error).context("Could not read the remembered Codex folder"),
         };
         let discovery = discover(&default)?;
-        let selection = choose(discovery, remembered, &default.to_string_lossy());
+        let selection = choose_with_environment(
+            discovery,
+            remembered,
+            &default.to_string_lossy(),
+            environment,
+        );
         if let Some(path) = &selection.path {
             let path = super::validate_codex_home(path)?;
             if selection.source == "Previously detected on this device" {
@@ -337,6 +376,150 @@ mod tests {
         );
         assert!(result.path.is_none());
         assert_eq!(result.candidates.len(), 1);
+    }
+
+    #[test]
+    fn switcher_environment_cannot_hide_a_live_wsl_home() {
+        let result = choose_with_environment(
+            Discovery {
+                live: vec![candidate("/wsl")],
+                available: vec![candidate("/native")],
+                ..Default::default()
+            },
+            Some(candidate("/native")),
+            "/native",
+            Some(PathBuf::from("/native")),
+        );
+        assert!(result.path.is_none());
+        assert!(result.error.is_some());
+        assert_eq!(result.candidates.len(), 2);
+        assert!(result.candidates.iter().any(|entry| entry.path == "/wsl"));
+        assert!(result
+            .candidates
+            .iter()
+            .any(|entry| entry.source == "Switcher CODEX_HOME"));
+    }
+
+    #[test]
+    fn switcher_environment_agreeing_with_the_live_home_is_unambiguous() {
+        let result = choose_with_environment(
+            Discovery {
+                live: vec![candidate("/custom")],
+                available: vec![candidate("/native")],
+                ..Default::default()
+            },
+            None,
+            "/native",
+            Some(PathBuf::from("/custom")),
+        );
+        assert_eq!(result.path.as_deref(), Some("/custom"));
+        assert_eq!(result.candidates.len(), 1);
+    }
+
+    #[test]
+    fn switcher_environment_cannot_hide_conflicting_existing_logins() {
+        let result = choose_with_environment(
+            Discovery {
+                available: vec![candidate("/native"), candidate("/wsl")],
+                ..Default::default()
+            },
+            None,
+            "/native",
+            Some(PathBuf::from("/native")),
+        );
+        assert!(result.path.is_none());
+        assert_eq!(result.candidates.len(), 2);
+    }
+
+    #[test]
+    fn switcher_environment_cannot_bypass_unobservable_wsl() {
+        let result = choose_with_environment(
+            Discovery {
+                unresolved: Some("WSL is unavailable".into()),
+                ..Default::default()
+            },
+            None,
+            "/native",
+            Some(PathBuf::from("/native")),
+        );
+        assert!(result.path.is_none());
+        assert_eq!(result.error.as_deref(), Some("WSL is unavailable"));
+    }
+
+    #[test]
+    fn changed_environment_does_not_silently_replace_a_remembered_home() {
+        let result = choose_with_environment(
+            Discovery::default(),
+            Some(candidate("/wsl")),
+            "/native",
+            Some(PathBuf::from("/native")),
+        );
+        assert!(result.path.is_none());
+        assert_eq!(result.candidates.len(), 2);
+    }
+
+    #[test]
+    fn stopping_codex_retains_an_agreed_environment_home() {
+        let result = choose_with_environment(
+            Discovery {
+                available: vec![candidate("/native")],
+                ..Default::default()
+            },
+            Some(candidate("/custom")),
+            "/native",
+            Some(PathBuf::from("/custom")),
+        );
+        assert_eq!(result.path.as_deref(), Some("/custom"));
+    }
+
+    #[test]
+    fn environment_is_used_when_it_is_the_only_known_candidate() {
+        let result = choose_with_environment(
+            Discovery::default(),
+            None,
+            "/native",
+            Some(PathBuf::from("/custom")),
+        );
+        assert_eq!(result.path.as_deref(), Some("/custom"));
+        assert_eq!(result.source, "Switcher CODEX_HOME");
+    }
+
+    #[test]
+    fn environment_conflict_blocks_auth_target_resolution_without_changing_credentials() {
+        let _home = super::super::test_support::TestHome::new();
+        let default = default_home().unwrap();
+        std::fs::create_dir_all(&default).unwrap();
+        let auth = default.join("auth.json");
+        std::fs::write(&auth, "private-fixture-not-json").unwrap();
+        let other = default.with_file_name("other-codex");
+        std::fs::create_dir_all(&other).unwrap();
+
+        let selection = resolve_with_environment(Some(other.into_os_string())).unwrap();
+
+        assert!(selection.path.is_none());
+        assert!(super::super::get_codex_home().is_err());
+        assert_eq!(
+            std::fs::read_to_string(auth).unwrap(),
+            "private-fixture-not-json"
+        );
+        assert!(!super::super::get_config_dir()
+            .unwrap()
+            .join("detected-codex-home.json")
+            .exists());
+    }
+
+    #[test]
+    fn confirmed_manual_target_can_override_the_switcher_environment() {
+        let _home = super::super::test_support::TestHome::new();
+        let target = default_home().unwrap();
+        let mut settings = super::super::load_app_settings().unwrap();
+        settings.codex_home_override = Some(target.to_string_lossy().into_owned());
+        super::super::save_app_settings(&settings).unwrap();
+
+        let selection = resolve_with_environment(Some("invalid-relative-home".into())).unwrap();
+
+        assert_eq!(selection.path.as_deref(), target.to_str());
+        assert_eq!(selection.source, "Manually selected");
     }
 
     #[test]

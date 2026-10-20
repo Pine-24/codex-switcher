@@ -109,9 +109,10 @@ The browser dashboard serves the same UI and backend actions through `/api/invok
 
 ### Account switching on Windows and Ubuntu
 
-Switcher automatically selects the account folder on each device. An explicit
-manual setting or Switcher's `CODEX_HOME` takes precedence. Otherwise it detects
-running Codex homes on Ubuntu/Linux and in running WSL distributions on Windows.
+Switcher automatically selects the account folder on each device. Only an explicit
+manual setting bypasses detection. Switcher's `CODEX_HOME` is checked alongside
+running Codex homes on Ubuntu/Linux and in running WSL distributions on Windows;
+if they disagree, switching is blocked until you select the intended environment.
 A single observed home is selected and remembered after Codex closes. Native
 Windows uses its standard login location; it does not inspect other Windows
 processes' environment blocks.
@@ -119,6 +120,8 @@ processes' environment blocks.
 Windows and WSL can use different `CODEX_HOME` directories. A Windows Switcher
 updating `%USERPROFILE%\.codex\auth.json` does not update a Desktop app-server
 using `/home/your-user/.codex/auth.json` inside WSL.
+This also applies when the visible Codex app runs on Windows but uses a WSL
+backend. Closing the Windows app alone does not verify that its WSL server stopped.
 
 When multiple running environments or existing logins conflict, Switcher stops
 and asks you to choose in **Settings → Codex account folder**. Windows-native
