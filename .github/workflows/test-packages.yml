@@ -1,0 +1,105 @@
+name: Test packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-packages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x64
+            bundles: nsis
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: ubuntu-x64
+            bundles: deb,appimage
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Ubuntu dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build unsigned test packages without publishing
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          pnpm exec tauri build \
+            --target '${{ matrix.target }}' \
+            --bundles '${{ matrix.bundles }}' \
+            --config '{"version":"0.2.22-pine.pr2.2","bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Collect packages and provenance
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          PACKAGE_PLATFORM: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p test-packages
+          find "src-tauri/target/$TARGET/release/bundle" -type f \
+            \( -name '*-setup.exe' -o -name '*.deb' -o -name '*.AppImage' \) \
+            -exec cp '{}' test-packages/ \;
+          if [ "$PACKAGE_PLATFORM" = windows-x64 ]; then
+            test "$(find test-packages -name '*-setup.exe' | wc -l)" -eq 1
+          else
+            test "$(find test-packages -name '*.deb' | wc -l)" -eq 1
+            test "$(find test-packages -name '*.AppImage' | wc -l)" -eq 1
+          fi
+          {
+            printf 'Version: 0.2.22-pine.pr2.2\n'
+            printf 'Source: %s\n' "$(git rev-parse HEAD)"
+            printf 'Platform: %s\n' "$PACKAGE_PLATFORM"
+            printf 'Build: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'Unsigned test build. No release or updater manifest published.\n'
+            printf 'Uses the normal application identifier and settings. Do not run alongside another Switcher instance.\n'
+            printf 'Account switching on physical devices has not been verified by this build.\n'
+          } > test-packages/BUILD-INFO.txt
+          cd test-packages
+          sha256sum -- * > SHA256SUMS.txt
+
+      - name: Upload test packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-switcher-${{ matrix.name }}-pr2
+          path: test-packages/
+          if-no-files-found: error
+          retention-days: 14

@@ -198,6 +198,7 @@ function App() {
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
+  const processCheckErrorRef = useRef<string | null>(null);
   const [pendingSwitchAccountId, setPendingSwitchAccountId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isOpeningCodex, setIsOpeningCodex] = useState(false);
@@ -425,12 +426,14 @@ function App() {
   const checkProcesses = useCallback(async () => {
     try {
       const info = await invokeBackend<CodexProcessInfo>("check_codex_processes");
+      processCheckErrorRef.current = null;
       setProcessInfo((prev) => {
         if (
           prev &&
           prev.can_switch === info.can_switch &&
           prev.count === info.count &&
           prev.background_count === info.background_count &&
+          prev.wsl_count === info.wsl_count &&
           prev.pids.length === info.pids.length &&
           prev.pids.every((pid, index) => pid === info.pids[index])
         ) {
@@ -441,6 +444,8 @@ function App() {
       return info;
     } catch (err) {
       console.error("Failed to check processes:", err);
+      processCheckErrorRef.current = String(err);
+      setProcessInfo(null);
       return null;
     }
   }, []);
@@ -557,7 +562,10 @@ function App() {
       setSwitchingId(accountId);
       const latestProcessInfo = await checkProcesses();
       if (!latestProcessInfo) {
-        showWarmupToast("Could not check running Codex processes. Try again.", true);
+        showWarmupToast(processCheckErrorRef.current ?? "Could not check running Codex processes. Try again.", true);
+        if (processCheckErrorRef.current?.includes("Codex account folder needs attention:")) {
+          setIsSettingsOpen(true);
+        }
         return;
       }
       if (!latestProcessInfo.can_switch) {
@@ -1825,7 +1833,7 @@ function App() {
                   </h2>
                   <AccountCard
                     account={activeAccount}
-                    onSwitch={() => { }}
+                    onSwitch={() => handleSwitch(activeAccount.id)}
                     onWarmup={() =>
                       handleWarmupAccount(activeAccount.id, activeAccount.name)
                     }
@@ -1989,6 +1997,7 @@ function App() {
 
       {isSettingsOpen && (
         <SettingsModal
+          onCodexHomeSaved={() => { void loadAccounts(true); void checkProcesses(); }}
           reopenPreference={desktopReopen.preference}
           onReopenPreferenceChange={saveDesktopReopenPreference}
           closePreference={codexClose.preference}
@@ -2034,6 +2043,9 @@ function App() {
                   </>
                 )}
               </div>
+              {(processInfo?.wsl_count ?? 0) > 0 && (
+                <p className="text-sm text-orange-700 dark:text-orange-300">This includes WSL Codex sessions and their Linux Desktop. Windows Codex and chats may disconnect. WSL sessions receive a normal termination request even when Force close is selected; unrelated WSL apps are not stopped. WSL desktops must be reopened manually.</p>
+              )}
               {pendingSwitchAccount && (
                 <p className="text-sm text-gray-600 dark:text-gray-300">
                   After closing Codex, Codex Switcher will switch to{" "}

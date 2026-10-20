@@ -3,6 +3,7 @@ import type { DesktopReopenPreference } from "../lib/desktopReopen";
 import type { CodexClosePreference } from "../lib/codexClosePreference";
 import { invokeBackend, isTauriRuntime } from "../lib/platform";
 import type { DockDisplayMode } from "../types";
+import { CodexHomeSetting } from "./CodexHomeSetting";
 
 type TrayDisplayMode = "icon_and_session" | "active_usage_text" | "hidden";
 interface DisplaySettings {
@@ -16,6 +17,7 @@ interface SettingsModalProps {
   closePreference: CodexClosePreference;
   onClosePreferenceChange: (value: CodexClosePreference) => void;
   onClose: () => void;
+  onCodexHomeSaved: () => void;
 }
 
 export function SettingsModal({
@@ -24,6 +26,7 @@ export function SettingsModal({
   closePreference,
   onClosePreferenceChange,
   onClose,
+  onCodexHomeSaved,
 }: SettingsModalProps) {
   const [displaySettings, setDisplaySettings] = useState<DisplaySettings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -92,6 +95,8 @@ export function SettingsModal({
         <div className="p-5 space-y-3 max-h-[65vh] overflow-y-auto">
           {desktop && (
             <>
+              <CodexHomeSetting onSaved={onCodexHomeSaved} />
+              <div className="border-t border-gray-100 dark:border-gray-800" />
               {displaySettings ? (
                 <>
                   <label htmlFor="tray-display-mode" className="block text-sm font-medium text-gray-900 dark:text-gray-100">Tray</label>

@@ -86,6 +86,8 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
 async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<StoredAccount> {
     let (current, is_active) = load_account_reconciling_live_auth(&account.id)?;
 
+    super::switcher::ensure_auth_target_stopped()?;
+
     if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
         return Ok(current);
     }

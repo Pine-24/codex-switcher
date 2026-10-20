@@ -107,6 +107,64 @@ The browser dashboard serves the same UI and backend actions through `/api/invok
 
 ## Usage and Reset Credits
 
+### Account switching on Windows and Ubuntu
+
+Switcher automatically selects the account folder on each device. Only an explicit
+manual setting bypasses detection. Switcher's `CODEX_HOME` is checked alongside
+running Codex homes on Ubuntu/Linux and in running WSL distributions on Windows;
+if they disagree, switching is blocked until you select the intended environment.
+A single observed home is selected and remembered after Codex closes. Native
+Windows uses its standard login location; it does not inspect other Windows
+processes' environment blocks.
+
+Windows and WSL can use different `CODEX_HOME` directories. A Windows Switcher
+updating `%USERPROFILE%\.codex\auth.json` does not update a Desktop app-server
+using `/home/your-user/.codex/auth.json` inside WSL.
+This also applies when the visible Codex app runs on Windows but uses a WSL
+backend. Closing the Windows app alone does not verify that its WSL server stopped.
+
+When multiple running environments or existing logins conflict, Switcher stops
+and asks you to choose in **Settings → Codex account folder**. Windows-native
+Codex running alongside WSL is a conflict, not a reason to guess. If there is
+no live evidence, the previous selection is retained; otherwise a single
+existing login can be selected. With no candidates, the OS default is used.
+Uninspectable/stopped WSL environments without a known selection require you to
+start Codex and retry detection, or select a folder manually. Detection does not
+start stopped distributions just to scan them.
+
+Settings shows the selected path and its source. **Detect again** refreshes
+detection; **Use automatic selection** removes a manual override. The advanced
+folder picker/direct path entry remains available for custom installations.
+For example, a manual WSL path can be
+`\\wsl.localhost\Ubuntu\home\your-user\.codex`. Detection reads only process
+metadata and tests for file existence, not authentication contents. Selecting
+a folder does not copy credentials. Detected paths are stored locally in
+`.codex-switcher/detected-codex-home.json`, not in account exports.
+The WSL folder must already contain `auth.json` from a Codex login; switching
+updates that existing file and preserves its Linux permissions.
+
+When Codex is running, use Switcher's close-and-switch confirmation. Windows
+native CLI/app-server processes and Ubuntu headless/background Codex processes
+are blockers even without a visible window. On Windows with a WSL target, the
+confirmation also covers matching Codex sessions and their Linux Desktop in that
+distribution. WSL shutdown uses an embedded helper (no repository checkout or
+external launcher required), needs `/usr/bin/python3` with pidfd support, and
+sends only SIGTERM even when the native Force close option is selected. It can
+disconnect Windows Codex chats too. Other WSL apps and distributions are not
+stopped. Uninspectable, unknown, or remaining processes block switching.
+
+After switching, supported native desktops captured before closing can reopen
+with the existing confirmation setting. Ubuntu captures the executable of the
+running desktop and verifies its adjacent `resources/codex`; unsupported desktop
+packages and WSL desktops should be reopened manually. An account already marked
+Active can be applied again with **Reapply account**. Always verify the account
+in Codex after reopening.
+
+This supports file-based `auth.json` authentication; it does not change Codex's
+credential-store configuration or update OS keyring entries. Verify the account
+shown by Codex after reopening; Switcher's Active marker records its selection,
+not the account observed inside Desktop.
+
 Codex Switcher shows two kinds of account usage information:
 
 - **Rate limits** – the account card shows the current 5-hour and weekly limit

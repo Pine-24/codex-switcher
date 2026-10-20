@@ -43,6 +43,7 @@ fn default_close_behavior_prompt_enabled() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
+    pub codex_home_override: Option<String>,
     pub tray_display_mode: TrayDisplayMode,
     pub dock_display_mode: DockDisplayMode,
     #[serde(default = "default_close_behavior_prompt_enabled")]
@@ -53,6 +54,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             tray_display_mode: TrayDisplayMode::default(),
+            codex_home_override: None,
             dock_display_mode: DockDisplayMode::default(),
             close_behavior_prompt_enabled: true,
         }

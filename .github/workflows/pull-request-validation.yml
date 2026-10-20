@@ -38,6 +38,9 @@ jobs:
       - name: Run frontend tests
         run: pnpm test
 
+      - name: Test WSL process helper without terminating real sessions
+        run: python3 -m unittest discover -s tests -p 'test_stop_wsl_codex.py'
+
   rust:
     name: Rust tests and format
     runs-on: ubuntu-22.04
@@ -87,3 +90,7 @@ jobs:
 
       - name: Compile platform-specific Rust
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Test Windows account and process handling
+        if: runner.os == 'Windows'
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
