@@ -17,6 +17,7 @@ on:
 
 jobs:
   publish:
+    if: github.repository == 'Lampese/codex-switcher'
     permissions:
       contents: write
     strategy:

@@ -1,0 +1,157 @@
+name: Pine release packages
+
+on:
+  push:
+    branches: [codex/release-v0.2.22]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pine-release-v0.2.22
+  cancel-in-progress: false
+
+env:
+  RELEASE_VERSION: 0.2.22
+  SOURCE_BASE: 56c3feb379c866bfb1cfebbaaf426bf6dfd71b06
+
+jobs:
+  build:
+    if: github.repository == 'Pine-24/codex-switcher' && github.ref == 'refs/heads/codex/release-v0.2.22'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x64
+            bundles: nsis
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: ubuntu-x64
+            bundles: deb,appimage
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Ubuntu dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2
+      - name: Verify release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$SOURCE_BASE" "$GITHUB_SHA"
+          node --test tests/pineReleaseConfig.test.mjs tests/verifyNsisBinary.test.mjs
+          git diff --check
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Frontend and mocked process tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm test
+          python -m unittest discover -s tests -p 'test_stop_wsl_codex.py'
+      - name: Native Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build unsigned manual-update packages
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          set -euo pipefail
+          pnpm exec tauri build --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' -- --locked
+          git diff --exit-code
+          mkdir -p release-output
+      - name: Verify Windows installation and startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_x64-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          $binary = (Resolve-Path 'src-tauri/target/x86_64-pc-windows-msvc/release/codex-switcher.exe').Path
+          $bytes = [IO.File]::ReadAllBytes($binary)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550 -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) { throw 'Expected an x86_64 PE executable' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'codex-switcher-pine-smoke'
+          $installer = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/S', "/D=$installDir") -PassThru
+          if (-not $installer.WaitForExit(120000)) { $installer.Kill(); throw 'Silent installation timed out' }
+          if ($installer.ExitCode -ne 0) { throw "Silent installation failed: $($installer.ExitCode)" }
+          $installedBinary = Join-Path $installDir 'codex-switcher.exe'
+          if (-not (Test-Path $installedBinary)) { throw 'Installed binary not found' }
+          node scripts/verify-nsis-binary.mjs $binary $installedBinary release-output/WINDOWS-INSTALL-VERIFICATION.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed binary verification failed' }
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP 'pine-smoke-codex-home'
+          New-Item -ItemType Directory -Force $env:CODEX_HOME | Out-Null
+          $app = Start-Process -FilePath $installedBinary -WorkingDirectory $installDir -PassThru
+          try {
+            Start-Sleep -Seconds 10
+            $app.Refresh()
+            if ($app.HasExited) { throw "Packaged application exited during startup: $($app.ExitCode)" }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
+          Copy-Item $installers[0].FullName "release-output/Codex-Switcher-Pine_$($env:RELEASE_VERSION)_windows-x64-setup.exe"
+      - name: Verify Ubuntu packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb)
+          images=(src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage)
+          test "${#debs[@]}" -eq 1
+          test "${#images[@]}" -eq 1
+          test "$(dpkg-deb --field "${debs[0]}" Version)" = "$RELEASE_VERSION"
+          test "$(dpkg-deb --field "${debs[0]}" Architecture)" = amd64
+          file "${images[0]}" | grep -q 'ELF 64-bit.*x86-64'
+          cp "${debs[0]}" "release-output/Codex-Switcher-Pine_${RELEASE_VERSION}_ubuntu-amd64.deb"
+          cp "${images[0]}" "release-output/Codex-Switcher-Pine_${RELEASE_VERSION}_ubuntu-amd64.AppImage"
+      - name: Record provenance and checksums
+        shell: bash
+        env:
+          RELEASE_PLATFORM: ${{ matrix.name }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const info = {
+            version: process.env.RELEASE_VERSION,
+            source_sha: process.env.GITHUB_SHA,
+            merged_fix_base_sha: process.env.SOURCE_BASE,
+            platform: process.env.RELEASE_PLATFORM,
+            target: process.env.RELEASE_TARGET,
+            workflow_run: `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            unsigned: true,
+            updates: "manual; upstream feed disabled",
+            verification: ["release configuration tests", "frontend tests", "mocked Python tests", "native Rust tests", "locked release build", ...(process.env.RELEASE_PLATFORM === "windows-x64" ? ["PE x64 header", "silent install", "exact NSIS marker binary comparison", "10 second startup"] : ["DEB version and architecture", "AppImage ELF architecture"])],
+            not_verified: ["live account switching with this final binary", "Ubuntu device startup"]
+          };
+          fs.writeFileSync(`release-output/BUILD-INFO-${info.platform}.json`, `${JSON.stringify(info, null, 2)}\n`);
+          NODE
+          cd release-output
+          sha256sum -- * > "SHA256SUMS-${RELEASE_PLATFORM}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pine-release-${{ matrix.name }}
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 14
