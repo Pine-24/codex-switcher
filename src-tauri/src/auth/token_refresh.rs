@@ -84,11 +84,24 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
 }
 
 async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<StoredAccount> {
+    refresh_chatgpt_tokens_with_process_check(
+        account,
+        crate::commands::process::ensure_codex_not_running,
+    )
+    .await
+}
+
+async fn refresh_chatgpt_tokens_with_process_check(
+    account: &StoredAccount,
+    ensure_stopped: impl FnOnce() -> Result<(), String>,
+) -> Result<StoredAccount> {
     let (current, is_active) = load_account_reconciling_live_auth(&account.id)?;
 
-    super::switcher::ensure_auth_target_stopped()?;
-
-    if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
+    // Usage refreshes for inactive accounts only update Switcher's store.
+    // For the active account, this check includes both native and WSL Codex:
+    // reuse live credentials while it is running (or its state is unknown),
+    // without rotating a shared refresh token or replacing auth.json.
+    if is_active && ensure_stopped().is_err() {
         return Ok(current);
     }
 
@@ -345,7 +358,8 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
 mod tests {
     use super::{
         chatgpt_tokens_need_refresh, chatgpt_tokens_need_refresh_at, merge_refresh_response,
-        reconcile_active_account_from_auth, resolve_refreshed_id_token, RefreshTokenResponse,
+        reconcile_active_account_from_auth, refresh_chatgpt_tokens_with_process_check,
+        resolve_refreshed_id_token, RefreshTokenResponse,
     };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -360,6 +374,96 @@ mod tests {
             r#"{{"exp":{exp},"https://api.openai.com/auth":{{"chatgpt_account_id":"{account_id}"}}}}"#
         ));
         format!("header.{payload}.{signature}")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inactive_refresh_does_not_require_codex_to_stop() {
+        let _home = crate::auth::test_support::TestHome::new();
+        // A missing refresh token gives a deterministic error before network I/O.
+        let account = StoredAccount::new_chatgpt(
+            "Inactive".into(),
+            None,
+            None,
+            None,
+            jwt_with_exp(0),
+            jwt_with_exp(0),
+            String::new(),
+            None,
+        );
+        crate::auth::save_accounts(&AccountsStore {
+            accounts: vec![account.clone()],
+            active_account_id: Some("other-account".into()),
+            ..AccountsStore::default()
+        })
+        .unwrap();
+
+        let error = refresh_chatgpt_tokens_with_process_check(&account, || {
+            panic!("inactive refresh must not inspect running native or WSL Codex")
+        })
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Missing refresh token"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_refresh_preserves_live_auth_when_codex_is_running_or_unknown() {
+        let _home = crate::auth::test_support::TestHome::new();
+        let now = chrono::Utc::now().timestamp();
+        let account = StoredAccount::new_chatgpt(
+            "Active".into(),
+            None,
+            None,
+            None,
+            account_jwt("workspace-a", now - 3600, "stored"),
+            jwt_with_exp(now - 3600),
+            String::new(),
+            Some("workspace-a".into()),
+        );
+        let auth = AuthDotJson {
+            openai_api_key: None,
+            tokens: Some(TokenData {
+                id_token: account_jwt("workspace-a", now - 3600, "live"),
+                access_token: jwt_with_exp(now + 3600),
+                refresh_token: String::new(),
+                account_id: Some("workspace-a".into()),
+            }),
+            last_refresh: None,
+        };
+        let home = crate::auth::test_support::home_dir()
+            .unwrap()
+            .join(".codex");
+        std::fs::create_dir_all(&home).unwrap();
+        let mut settings = crate::auth::load_app_settings().unwrap();
+        settings.codex_home_override = Some(home.to_string_lossy().into_owned());
+        crate::auth::save_app_settings(&settings).unwrap();
+        let auth_path = home.join("auth.json");
+        let auth_bytes = serde_json::to_vec(&auth).unwrap();
+        std::fs::write(&auth_path, &auth_bytes).unwrap();
+
+        for blocker in [
+            "Cannot switch accounts while Codex processes are running in the selected WSL distribution",
+            "WSL process check timed out",
+        ] {
+            crate::auth::save_accounts(&AccountsStore {
+                accounts: vec![account.clone()],
+                active_account_id: Some(account.id.clone()),
+                ..AccountsStore::default()
+            }).unwrap();
+            let current = refresh_chatgpt_tokens_with_process_check(&account, || {
+                Err(blocker.into())
+            }).await.unwrap();
+            let AuthData::ChatGPT { access_token, .. } = current.auth_data else {
+                panic!("expected ChatGPT account");
+            };
+            assert_eq!(access_token, auth.tokens.as_ref().unwrap().access_token);
+            assert_eq!(std::fs::read(&auth_path).unwrap(), auth_bytes);
+        }
+
+        let error = refresh_chatgpt_tokens_with_process_check(&account, || Ok(()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Missing refresh token"));
     }
 
     #[test]

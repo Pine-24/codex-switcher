@@ -26,10 +26,12 @@ UNC directory. Changing it clears the selected marker without copying auth files
 An already selected account can be reapplied through the main account card; the
 backend no longer returns success based only on that marker.
 
-Windows switches and token refreshes targeting WSL check for remaining Codex
-processes in that distribution. Unknown state and timeout block the operation.
-The check does not stop those processes. Writes to WSL require an existing
-`auth.json` and retain its Linux permissions.
+Windows switches targeting WSL check for remaining Codex processes in that
+distribution. Unknown state and timeout block switching. Active-account token
+refreshes reuse live credentials when Codex is running or its state is unknown;
+inactive-account refreshes do not require Codex to stop. The check does not stop
+those processes. Writes to WSL require an existing `auth.json` and retain its
+Linux permissions.
 
 The optional launcher uses the already installed executable with a child-only
 `CODEX_HOME` override. It is a workaround for the destination mismatch, not a
@@ -208,3 +210,25 @@ Regression tests cover the inherited-native-environment/live-WSL conflict,
 agreement, conflicting existing logins, unknown WSL, remembered-home conflicts,
 post-close retention, and manual override. Real Windows/WSL account switching
 still needs to be retested with the rebuilt package.
+
+## v0.2.22 usage refresh blocked by WSL Codex
+
+The reported switch-blocking error also occurred on the usage-fetch path:
+`get_usage_with_chatgpt_auth` refreshes expired credentials, and
+`refresh_chatgpt_tokens_locked` unconditionally required WSL Codex to stop before
+reaching the existing active-account guard. This blocked inactive accounts too.
+
+The redundant unconditional check is removed. The active-account guard already
+checks native and WSL processes and reuses reconciled live credentials on a
+blocker or unknown state. Inactive accounts can refresh their saved credentials
+without writing the selected Codex auth file. Actual account switching retains
+its process checks. If the active account's live access token is also expired,
+usage may still fail until Codex refreshes it or is closed for a safe refresh.
+
+Validation: ten token-refresh tests passed in an isolated harness using the
+actual auth/storage/process modules, a no-op Tauri command attribute, and no
+HTTP/TLS requests. New tests cover inactive refresh independence, active WSL
+blockers and unknown state, live-token reconciliation, and unchanged auth-file
+bytes. Rust formatting and diff checks passed. The full application test command
+was blocked by an uncached dependency (`chacha20poly1305`); packaged Windows/WSL
+runtime behavior and a rebuilt installer remain unverified.
