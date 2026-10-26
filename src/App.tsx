@@ -42,6 +42,7 @@ import {
   type AutoWarmupWindowKind,
 } from "./lib/autoWarmupPolicy";
 import { getTauriWindow } from "./lib/tauriWindow";
+import { codexAppStatus } from "./lib/codexAppStatus";
 import "./App.css";
 
 const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
@@ -432,6 +433,7 @@ function App() {
           prev &&
           prev.can_switch === info.can_switch &&
           prev.count === info.count &&
+          prev.desktop_count === info.desktop_count &&
           prev.background_count === info.background_count &&
           prev.wsl_count === info.wsl_count &&
           prev.pids.length === info.pids.length &&
@@ -1245,6 +1247,7 @@ function App() {
   const activeAccount = accounts.find((a) => a.is_active);
   const otherAccounts = accounts.filter((a) => !a.is_active);
   const hasRunningProcesses = processInfo && processInfo.count > 0;
+  const appStatus = processInfo ? codexAppStatus(processInfo) : null;
   const pendingSwitchAccount = useMemo(
     () => accounts.find((account) => account.id === pendingSwitchAccountId),
     [accounts, pendingSwitchAccountId]
@@ -1420,7 +1423,7 @@ function App() {
                     Codex Switcher
                   </h1>
                   {processInfo && (
-                    <div className="inline-flex items-center gap-1">
+                    <div className="inline-flex flex-wrap items-center gap-1">
                       <span
                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${hasRunningProcesses
                             ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700"
@@ -1431,12 +1434,13 @@ function App() {
                           className={`inline-block w-1.5 h-1.5 rounded-full ${hasRunningProcesses ? "bg-amber-500" : "bg-green-500"
                             }`}
                         ></span>
-                        <span>
-                          {hasRunningProcesses
-                            ? `${processInfo.count} Codex running`
-                            : "0 Codex running"}
-                        </span>
+                        <span>{appStatus?.label}</span>
                       </span>
+                      {appStatus?.backgroundRunning && (
+                        <span className="text-xs text-amber-700 dark:text-amber-300">
+                          Background activity running
+                        </span>
+                      )}
                       {hasRunningProcesses && (
                         <button
                           onClick={() => {

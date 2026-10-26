@@ -232,3 +232,24 @@ blockers and unknown state, live-token reconciliation, and unchanged auth-file
 bytes. Rust formatting and diff checks passed. The full application test command
 was blocked by an uncached dependency (`chacha20poly1305`); packaged Windows/WSL
 runtime behavior and a rebuilt installer remain unverified.
+
+## Desktop app count in the status badge
+
+The user confirmed that account switching works with the Windows
+`0.2.23-usage.1` test package, but the badge displayed four Codex processes for
+one visible app. The primary status now uses a separate `desktop_count` for
+desktop app instances. Windows Electron children, CLI sessions, managed daemons,
+and WSL backends do not increase this count. Linux desktop roots in the selected
+WSL distribution are counted as apps in their own right.
+
+The existing `count`, `pids`, `wsl_count`, and `can_switch` contract remains the
+source of switching/closing decisions. If there are zero apps but remaining
+blockers, the badge also shows `Background activity running` and retains the
+close action. Missing desktop-count information is displayed as unavailable,
+never substituted with a process count or an assumed zero. Process polling
+updates the UI when the desktop count changes even if blocker counts stay equal.
+
+Regression coverage includes one Windows app plus WSL backends, multiple apps,
+CLI-only activity, Electron descendants, Linux desktop roots, missing display
+counts, and the unchanged switching guard. The next Windows test package is
+`0.2.23-usage.2`; its real-device app-count display still needs user confirmation.

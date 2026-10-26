@@ -111,6 +111,25 @@ def brief(record):
     return {key: record[key] for key in ("pid", "name", "parent")}
 
 
+def desktop_count(processes):
+    # Count Linux desktop roots, not WSL app-servers belonging to a Windows app.
+    # Display failures must not change the switching/termination checks.
+    try:
+        desktops = []
+        for record in processes.values():
+            executable = Path(record["exe"])
+            if record["uid"] != os.getuid() or executable.name not in ("ChatGPT", "Codex", "codex-desktop"):
+                continue
+            if not (executable.parent / "resources/codex").is_file():
+                continue
+            parent = processes.get(record["parent"])
+            if not parent or parent["exe"] != record["exe"]:
+                desktops.append(record["pid"])
+        return len(set(desktops))
+    except (OSError, KeyError):
+        return None
+
+
 def exited(handle):
     poller = select.poll()
     poller.register(handle, select.POLLIN)
@@ -137,7 +156,8 @@ def main():
         raise RuntimeError("Safe process handles are unavailable")
     targets, roots = snapshot_targets(arguments.home)
     if not arguments.stop:
-        print(json.dumps({"status": "preview", "targets": [brief(record) for record in targets.values()], "blockingProcesses": [brief(record) for record in all_processes().values() if is_codex(record)]}))
+        processes = all_processes()
+        print(json.dumps({"status": "preview", "targets": [brief(record) for record in targets.values()], "blockingProcesses": [brief(record) for record in processes.values() if is_codex(record)], "desktopCount": desktop_count(processes)}))
         return 0
     handles = {}
     try:

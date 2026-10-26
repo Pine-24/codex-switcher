@@ -90,15 +90,19 @@ pub(super) fn desktop_roots(processes: &[LinuxProcess]) -> Vec<&LinuxProcess> {
 
 pub(super) fn blocking_pids() -> Result<Vec<u32>, String> {
     let processes = snapshot()?;
+    Ok(blocking_pids_from_snapshot(&processes))
+}
+
+pub(super) fn blocking_pids_from_snapshot(processes: &[LinuxProcess]) -> Vec<u32> {
     let mut pids: Vec<_> = processes
         .iter()
         .filter(|process| is_codex_executable(&process.executable))
         .map(|process| process.pid)
         .collect();
-    pids.extend(desktop_roots(&processes).iter().map(|process| process.pid));
+    pids.extend(desktop_roots(processes).iter().map(|process| process.pid));
     pids.sort_unstable();
     pids.dedup();
-    Ok(pids)
+    pids
 }
 
 #[cfg(test)]
@@ -171,6 +175,11 @@ mod tests {
                 parent: 10,
                 executable,
             },
+            LinuxProcess {
+                pid: 12,
+                parent: 10,
+                executable: root.join("resources/codex"),
+            },
         ];
         assert_eq!(
             desktop_roots(&processes)
@@ -179,6 +188,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![10]
         );
+        assert_eq!(blocking_pids_from_snapshot(&processes), vec![10, 12]);
         fs::remove_dir_all(root).unwrap();
     }
 }
