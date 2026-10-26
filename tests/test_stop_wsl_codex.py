@@ -1,4 +1,7 @@
 import importlib.util
+import contextlib
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +13,38 @@ spec.loader.exec_module(stopper)
 
 
 class StopWslCodexTests(unittest.TestCase):
+    def test_desktop_count_excludes_helpers_cli_and_unrelated_chatgpt(self):
+        root = {"pid": 10, "name": "ChatGPT", "parent": 1, "uid": stopper.os.getuid(), "exe": "/opt/codex/ChatGPT"}
+        child = {**root, "pid": 11, "parent": 10}
+        backend = {**root, "pid": 12, "parent": 10, "name": "codex", "exe": "/opt/codex/resources/codex"}
+        cli = {**backend, "pid": 13, "parent": 1}
+        unrelated = {**root, "pid": 14, "exe": "/opt/chatgpt/ChatGPT"}
+        other_user = {**root, "pid": 15, "uid": stopper.os.getuid() + 1}
+        processes = {record["pid"]: record for record in [root, child, backend, cli, unrelated, other_user]}
+        with patch.object(Path, "is_file", autospec=True, side_effect=lambda path: str(path) == "/opt/codex/resources/codex"):
+            self.assertEqual(stopper.desktop_count(processes), 1)
+            processes[20] = {**root, "pid": 20}
+            self.assertEqual(stopper.desktop_count(processes), 2)
+            self.assertEqual(stopper.desktop_count({12: backend, 13: cli}), 0)
+
+    def test_unavailable_desktop_count_is_unknown(self):
+        root = {"pid": 10, "name": "ChatGPT", "parent": 1, "uid": stopper.os.getuid(), "exe": "/opt/codex/ChatGPT"}
+        with patch.object(Path, "is_file", side_effect=PermissionError("fixture")):
+            self.assertIsNone(stopper.desktop_count({10: root}))
+
+    def test_preview_reports_app_count_separately_without_stopping_processes(self):
+        root = {"pid": 10, "name": "ChatGPT", "parent": 1, "uid": stopper.os.getuid(), "exe": "/opt/codex/ChatGPT"}
+        backend = {**root, "pid": 11, "parent": 10, "name": "codex", "exe": "/opt/codex/resources/codex"}
+        cli = {**backend, "pid": 12, "parent": 1}
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["helper", "--home", "/tmp"]), patch.object(stopper, "snapshot_targets", return_value=({}, set())), patch.object(stopper, "all_processes", return_value={10: root, 11: backend, 12: cli}), patch.object(Path, "is_file", return_value=True), patch.object(stopper.os, "pidfd_open") as opened, patch.object(stopper.signal, "pidfd_send_signal") as sent, contextlib.redirect_stdout(output):
+            self.assertEqual(stopper.main(), 0)
+        preview = json.loads(output.getvalue())
+        self.assertEqual(preview["desktopCount"], 1)
+        self.assertEqual([record["pid"] for record in preview["blockingProcesses"]], [11, 12])
+        opened.assert_not_called()
+        sent.assert_not_called()
+
     def test_discovery_returns_only_home_paths_and_deduplicates_processes(self):
         target = {"pid": 100, "name": "codex", "parent": 1, "uid": stopper.os.getuid(), "exe": "/opt/custom/codex"}
         child = {**target, "pid": 101}

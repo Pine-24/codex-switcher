@@ -9,6 +9,8 @@ struct ProcessRecord {
 #[derive(Deserialize)]
 struct HelperResult {
     status: String,
+    #[serde(rename = "desktopCount")]
+    desktop_count: Option<usize>,
     #[serde(rename = "blockingProcesses")]
     blocking_processes: Vec<ProcessRecord>,
     #[serde(rename = "remainingTargetPids")]
@@ -19,6 +21,12 @@ struct HelperResult {
 
 pub fn blocking_count() -> Result<usize> {
     Ok(run(false)?.map_or(0, |result| result.blocking_processes.len()))
+}
+
+pub fn status_counts() -> Result<(usize, Option<usize>)> {
+    Ok(run(false)?.map_or((0, Some(0)), |result| {
+        (result.blocking_processes.len(), result.desktop_count)
+    }))
 }
 
 pub fn close_selected() -> Result<usize> {
@@ -172,6 +180,20 @@ mod tests {
                 .pid,
             42
         );
+    }
+
+    #[test]
+    fn preview_keeps_desktop_count_separate_and_missing_counts_unknown() {
+        let preview = parse_result(
+            r#"{"status":"preview","desktopCount":1,"blockingProcesses":[{"pid":42},{"pid":43}]}"#,
+            false,
+        )
+        .unwrap();
+        assert_eq!(preview.desktop_count, Some(1));
+        assert_eq!(preview.blocking_processes.len(), 2);
+        let missing =
+            parse_result(r#"{"status":"preview","blockingProcesses":[]}"#, false).unwrap();
+        assert_eq!(missing.desktop_count, None);
     }
 
     #[test]

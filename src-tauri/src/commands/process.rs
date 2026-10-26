@@ -48,13 +48,15 @@ struct WindowsCodexProcess {
 /// Information about running Codex processes
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CodexProcessInfo {
-    /// Number of active Codex app instances
+    /// Number of detected processes that block account switching, including WSL.
     pub count: usize,
+    /// Desktop app instances only; None means the count could not be verified.
+    pub desktop_count: Option<usize>,
     /// Number of ignored background/stale Codex-related processes
     pub background_count: usize,
-    /// Whether switching is allowed (no active Codex app instances)
+    /// Whether switching is allowed (no blocking processes)
     pub can_switch: bool,
-    /// Process IDs of active Codex app instances
+    /// Native process IDs that block switching; WSL IDs remain separate.
     pub pids: Vec<u32>,
     pub wsl_count: usize,
 }
@@ -90,17 +92,69 @@ pub async fn check_codex_processes() -> Result<CodexProcessInfo, String> {
 
 fn check_codex_processes_blocking() -> Result<CodexProcessInfo, String> {
     crate::auth::home_detection::refresh_for_operation(false).map_err(|error| error.to_string())?;
-    let (pids, bg_count) = find_codex_processes().map_err(|e| e.to_string())?;
-    let wsl_count = crate::auth::wsl::blocking_count().map_err(|error| error.to_string())?;
+    let (pids, bg_count, desktop_count) = find_codex_process_status()?;
+    let (wsl_count, wsl_desktop_count) =
+        crate::auth::wsl::status_counts().map_err(|error| error.to_string())?;
+    Ok(process_info(
+        pids,
+        bg_count,
+        desktop_count,
+        wsl_count,
+        wsl_desktop_count,
+    ))
+}
+
+fn process_info(
+    pids: Vec<u32>,
+    bg_count: usize,
+    desktop_count: Option<usize>,
+    wsl_count: usize,
+    wsl_desktop_count: Option<usize>,
+) -> CodexProcessInfo {
     let count = pids.len() + wsl_count;
 
-    Ok(CodexProcessInfo {
+    CodexProcessInfo {
         count,
+        desktop_count: desktop_count
+            .zip(wsl_desktop_count)
+            .map(|(native, wsl)| native + wsl),
         background_count: bg_count,
         can_switch: count == 0,
         pids,
         wsl_count,
-    })
+    }
+}
+
+fn find_codex_process_status() -> Result<(Vec<u32>, usize, Option<usize>), String> {
+    #[cfg(windows)]
+    {
+        let processes = read_windows_codex_processes().map_err(|error| error.to_string())?;
+        let (pids, background_count) = classify_windows_codex_processes(&processes);
+        let desktop_count = windows_desktop_count(&processes, |path| {
+            std::path::Path::new(path).parent().is_some_and(|parent| {
+                parent.join("resources/app.asar").is_file() || parent.join("resources/app").is_dir()
+            })
+        });
+        return Ok((pids, background_count, Some(desktop_count)));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let processes = linux_process::snapshot()?;
+        let desktop_count = linux_process::desktop_roots(&processes).len();
+        return Ok((
+            linux_process::blocking_pids_from_snapshot(&processes),
+            0,
+            Some(desktop_count),
+        ));
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let (pids, background_count) = find_codex_processes().map_err(|error| error.to_string())?;
+        let desktop_count = desktop_reopen::capture_desktops(&pids)
+            .ok()
+            .map(|desktops| desktops.len());
+        Ok((pids, background_count, desktop_count))
+    }
 }
 
 pub(crate) fn ensure_codex_not_running() -> Result<(), String> {
@@ -695,8 +749,8 @@ fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
 #[cfg(windows)]
 fn read_windows_codex_processes() -> anyhow::Result<Vec<WindowsCodexProcess>> {
     // tasklist counts every Electron helper (`--type=gpu-process`, crashpad, renderer, etc.),
-    // which inflates the badge and incorrectly blocks switching. Use PowerShell so we can inspect
-    // the command line and only count live top-level app instances.
+    // which inflates counts and incorrectly blocks switching. Inspect command lines
+    // so desktop roots, helpers, and standalone switching blockers stay distinct.
     const POWERSHELL_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -742,6 +796,45 @@ Get-CimInstance Win32_Process |
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_windows_codex_processes(&stdout)
+}
+
+#[cfg(any(windows, test))]
+fn windows_desktop_count(
+    processes: &[WindowsCodexProcess],
+    has_desktop_resources: impl Fn(&str) -> bool,
+) -> usize {
+    let candidates = processes
+        .iter()
+        .filter(|process| {
+            if !is_windows_codex_root_process(process)
+                || is_ide_plugin_process(&process.command_line.to_ascii_lowercase())
+            {
+                return false;
+            }
+            // A CLI named codex.exe is also a switching blocker, but it is not an app.
+            if is_windows_codex_package_chatgpt_process(process) {
+                return true;
+            }
+            let path = if process.executable_path.trim().is_empty() {
+                windows_command_executable_path(&process.command_line).unwrap_or("")
+            } else {
+                process.executable_path.trim()
+            };
+            has_desktop_resources(path)
+        })
+        .map(|process| process.process_id)
+        .collect::<HashSet<_>>();
+    candidates
+        .iter()
+        .filter(|&&pid| {
+            !candidates.iter().any(|&root| {
+                root != pid
+                    && windows_has_descendant_matching(root, processes, |child| {
+                        child.process_id == pid
+                    })
+            })
+        })
+        .count()
 }
 
 #[cfg(any(windows, test))]
@@ -998,6 +1091,79 @@ mod tests {
 
         assert_eq!(processes.len(), 1);
         assert_eq!(processes[0].process_id, 10);
+    }
+
+    #[test]
+    fn desktop_count_is_independent_of_switching_blockers() {
+        let info = super::process_info(vec![10], 0, Some(1), 3, Some(0));
+        assert_eq!(info.desktop_count, Some(1));
+        assert_eq!(info.count, 4);
+        assert!(!info.can_switch);
+
+        let headless = super::process_info(vec![], 0, Some(0), 3, Some(0));
+        assert_eq!(headless.desktop_count, Some(0));
+        assert!(!headless.can_switch);
+
+        let both = super::process_info(vec![10], 0, Some(1), 2, Some(1));
+        assert_eq!(both.desktop_count, Some(2));
+        assert!(!both.can_switch);
+
+        let unknown = super::process_info(vec![10], 0, Some(1), 3, None);
+        assert_eq!(unknown.desktop_count, None);
+        assert!(!unknown.can_switch);
+
+        let stopped = super::process_info(vec![], 0, Some(0), 0, Some(0));
+        assert_eq!(stopped.desktop_count, Some(0));
+        assert!(stopped.can_switch);
+    }
+
+    #[test]
+    fn windows_app_count_excludes_cli_backends_and_electron_children() {
+        let package = r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.3748.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe";
+        let legacy = r"C:\Apps\Codex\Codex.exe";
+        let processes = vec![
+            windows_process("ChatGPT.exe", 10, 1, package, "", "Codex"),
+            windows_process("ChatGPT.exe", 11, 10, package, "--type=renderer", ""),
+            // A child with inaccessible command-line metadata is still part of the app.
+            windows_process("ChatGPT.exe", 12, 11, package, "", ""),
+            windows_process(
+                "Codex.exe",
+                20,
+                10,
+                r"C:\Apps\Codex\resources\codex.exe",
+                "codex.exe app-server",
+                "",
+            ),
+            windows_process(
+                "Codex.exe",
+                30,
+                1,
+                r"C:\Tools\codex.exe",
+                "codex.exe",
+                "Codex CLI",
+            ),
+            windows_process(
+                "Codex.exe",
+                40,
+                1,
+                r"C:\Users\Test\.vscode\extensions\codex.exe",
+                "codex.exe",
+                "",
+            ),
+        ];
+        assert_eq!(super::windows_desktop_count(&processes, |_| false), 1);
+        // CLI/IDE processes remain blockers even though the badge counts one app.
+        let (blockers, _) = classify_windows_codex_processes(&processes);
+        assert!(blockers.contains(&30));
+        assert!(blockers.contains(&40));
+
+        let mut two_apps = processes;
+        two_apps.push(windows_process("Codex.exe", 50, 1, legacy, "Codex.exe", ""));
+        assert_eq!(
+            super::windows_desktop_count(&two_apps, |path| path == legacy),
+            2
+        );
+        assert_eq!(super::windows_desktop_count(&two_apps[4..6], |_| false), 0);
     }
 
     #[test]
