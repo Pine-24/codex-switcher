@@ -1,24 +1,22 @@
 name: Pine release packages
 
 on:
-  push:
-    branches: [codex/release-v0.2.22]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pine-release-v0.2.22
+  group: pine-release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  RELEASE_VERSION: 0.2.22
+  RELEASE_VERSION: 0.2.23
   SOURCE_BASE: 56c3feb379c866bfb1cfebbaaf426bf6dfd71b06
 
 jobs:
   build:
-    if: github.repository == 'Pine-24/codex-switcher' && github.ref == 'refs/heads/codex/release-v0.2.22'
+    if: github.repository == 'Pine-24/codex-switcher' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -135,14 +133,16 @@ jobs:
           const info = {
             version: process.env.RELEASE_VERSION,
             source_sha: process.env.GITHUB_SHA,
-            merged_fix_base_sha: process.env.SOURCE_BASE,
+            source_base_sha: process.env.SOURCE_BASE,
+            source_ref: process.env.GITHUB_REF,
+            user_validated_prerelease: { version: "0.2.23-usage.2", source_sha: "7cf1f4153c90b46f45f16d909661a2ee18552d16" },
             platform: process.env.RELEASE_PLATFORM,
             target: process.env.RELEASE_TARGET,
             workflow_run: `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             unsigned: true,
             updates: "manual; upstream feed disabled",
             verification: ["release configuration tests", "frontend tests", "native Rust tests", "locked release build", ...(process.env.RELEASE_PLATFORM === "windows-x64" ? ["PE x64 header", "silent install", "exact NSIS marker binary comparison", "10 second startup"] : ["mocked Linux WSL Python tests", "DEB version and architecture", "AppImage ELF architecture"])],
-            not_verified: ["live account switching with this final binary", "Ubuntu device startup"]
+            not_verified: ["live usage display, app count, and account switching with this final binary", "Ubuntu device startup"]
           };
           fs.writeFileSync(`release-output/BUILD-INFO-${info.platform}.json`, `${JSON.stringify(info, null, 2)}\n`);
           NODE

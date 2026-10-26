@@ -1,4 +1,4 @@
-name: Windows usage refresh test package
+name: Windows test package
 
 on:
   workflow_dispatch:
@@ -7,16 +7,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: pine-usage-refresh-windows-test
+  group: pine-windows-test-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  RELEASE_VERSION: 0.2.23-usage.2
-  SOURCE_BASE: d471af0891759e97f3c0aef879179c6bd0f2cc12
+  RELEASE_VERSION: 0.2.23
+  SOURCE_BASE: 56c3feb379c866bfb1cfebbaaf426bf6dfd71b06
 
 jobs:
   build:
-    if: github.repository == 'Pine-24/codex-switcher' && github.ref == 'refs/heads/codex/usage-refresh-windows-test'
+    if: github.repository == 'Pine-24/codex-switcher'
     strategy:
       fail-fast: false
       matrix:
@@ -106,7 +106,7 @@ jobs:
           const info = {
             version: process.env.RELEASE_VERSION,
             source_sha: process.env.GITHUB_SHA,
-            release_base_sha: process.env.SOURCE_BASE,
+            source_base_sha: process.env.SOURCE_BASE,
             platform: process.env.RELEASE_PLATFORM,
             target: process.env.RELEASE_TARGET,
             workflow_run: `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
@@ -121,7 +121,7 @@ jobs:
           sha256sum -- * > "SHA256SUMS-${RELEASE_PLATFORM}.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: pine-usage-test-${{ matrix.name }}
+          name: pine-test-${{ matrix.name }}
           path: release-output/
           if-no-files-found: error
           retention-days: 14

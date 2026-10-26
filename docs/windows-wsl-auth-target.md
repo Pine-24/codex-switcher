@@ -251,5 +251,9 @@ updates the UI when the desktop count changes even if blocker counts stay equal.
 
 Regression coverage includes one Windows app plus WSL backends, multiple apps,
 CLI-only activity, Electron descendants, Linux desktop roots, missing display
-counts, and the unchanged switching guard. The next Windows test package is
-`0.2.23-usage.2`; its real-device app-count display still needs user confirmation.
+counts, and the unchanged switching guard. The Windows test package
+`0.2.23-usage.2` passed Windows CI (103 Rust tests, 35 frontend tests with seven
+platform skips, installation and startup checks). The user then confirmed that
+the updated app-count display works and authorized PR, merge, and release.
+This validates the prerelease on that Windows/WSL device; it does not replace
+validation of the final rebuilt release or Ubuntu device acceptance.

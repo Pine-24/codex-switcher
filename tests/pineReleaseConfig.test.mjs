@@ -6,7 +6,7 @@ const read = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "
 const config = JSON.parse(read("src-tauri/tauri.conf.json"));
 
 test("Pine release versions agree across all package manifests", () => {
-  const version = "0.2.23-usage.2";
+  const version = "0.2.23";
   assert.equal(JSON.parse(read("package.json")).version, version);
   assert.equal(config.version, version);
   assert.equal(read("src-tauri/Cargo.toml").match(/^version = "([^"]+)"/m)?.[1], version);
